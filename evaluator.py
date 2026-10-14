@@ -2,26 +2,38 @@ import logging
 import time
 import json
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 logger = logging.getLogger("Evaluator")
 
 class SignalEvaluator:
-    def __init__(self, history_file: str = "trade_history.json", default_budget: float = 2.0):
+    def __init__(self, history_file: str = "trade_history.json", active_file: str = "active_signal.json", default_budget: float = 2.0):
         self.history_file = history_file
-        self.trade_budget: float = default_budget  # مبلغ معامله هر روز/هر سیگنال به دلار
-        self.active_signal: Optional[Dict[str, Any]] = None
+        self.active_file = active_file
+        self.trade_budget: float = default_budget
         self.trade_history: List[Dict[str, Any]] = self._load_history()
-        # شمارنده شماره سیگنال‌ها (ادامه‌دار از تاریخچه)
-        self.signal_counter: int = len(self.trade_history)
+        self.active_signal: Optional[Dict[str, Any]] = self._load_active_signal()
+        self.signal_counter: int = self._determine_counter()
+
+    def _determine_counter(self) -> int:
+        max_num = 0
+        for t in self.trade_history:
+            num = t.get("number", 0)
+            if num > max_num:
+                max_num = num
+        if self.active_signal:
+            num = self.active_signal.get("number", 0)
+            if num > max_num:
+                max_num = num
+        return max_num
 
     def set_budget(self, new_budget: float) -> str:
-        """
-        تغییر مبلغ سرمایه معامله توسط کاربر
-        """
         if new_budget <= 0:
             return "❌ مبلغ باید بزرگتر از صفر باشد."
         self.trade_budget = round(new_budget, 2)
+        if self.active_signal and not self.active_signal.get("is_closed"):
+            self.active_signal["budget"] = self.trade_budget
+            self._save_active_signal()
         return f"✅ مبلغ سرمایه هر معامله با موفقیت به <b>${self.trade_budget:.2f}</b> تنظیم شد."
 
     def _load_history(self) -> List[Dict[str, Any]]:
@@ -40,15 +52,42 @@ class SignalEvaluator:
         except Exception as e:
             logger.error(f"خطا در ذخیره تاریخچه: {e}")
 
-    def register_entry(self, direction: str, entry_raw: str, current_price: Optional[float]) -> tuple[int, str]:
+    def _load_active_signal(self) -> Optional[Dict[str, Any]]:
+        if os.path.exists(self.active_file):
+            try:
+                with open(self.active_file, "r", encoding="utf-8") as f:
+                    sig = json.load(f)
+                    if sig and not sig.get("is_closed"):
+                        # اگر کمتر از ۳ ساعت گذشته باشد هنوز معتبر است
+                        if time.time() - sig.get("created_at", 0) < 10800:
+                            logger.info(f"♻️ سیگنال فعال #{sig.get('number')} از دیتابیس بازیابی شد.")
+                            return sig
+            except Exception as e:
+                logger.error(f"خطا در بازیابی سیگنال فعال: {e}")
+        return None
+
+    def _save_active_signal(self):
+        try:
+            if self.active_signal and not self.active_signal.get("is_closed"):
+                saved_copy = self.active_signal.copy()
+                if "profit_alerted_levels" in saved_copy and isinstance(saved_copy["profit_alerted_levels"], set):
+                    saved_copy["profit_alerted_levels"] = list(saved_copy["profit_alerted_levels"])
+                with open(self.active_file, "w", encoding="utf-8") as f:
+                    json.dump(saved_copy, f, ensure_ascii=False, indent=2)
+            else:
+                if os.path.exists(self.active_file):
+                    os.remove(self.active_file)
+        except Exception as e:
+            logger.error(f"خطا در ذخیره سیگنال فعال: {e}")
+
+    def register_entry(self, direction: str, entry_raw: str, current_price: Optional[float]) -> Tuple[int, str]:
         """
-        ثبت سیگنال جدید با شماره‌گذاری متوالی و تحلیل موقعیت بازار
-        خروجی: (شماره سیگنال, متن تحلیل)
+        ثبت سیگنال جدید در حافظه و دیتابیس با استاپ‌پیش‌فرض
         """
         if self.active_signal and not self.active_signal.get("is_closed"):
             self.close_trade(
                 outcome="EXPIRED",
-                reason="سیگنال جدید صادر شد و سیگنال قبلی جایگزین گردید.",
+                reason="سیگنال جدید صادر شد و معامله قبلی جایگزین گردید.",
                 exit_price=current_price
             )
 
@@ -57,21 +96,28 @@ class SignalEvaluator:
 
         entry_min, entry_max = self._parse_entry_range(entry_raw, current_price)
         mid_entry = (entry_min + entry_max) / 2 if (entry_min and entry_max) else (current_price or 0.0)
+        dir_clean = "BUY" if ("buy" in direction.lower() or "بای" in direction.lower()) else "SELL"
+
+        # استاپ‌لاس موقت پیش‌فرض (۳ دلار فاصله) تا زمانی که ادمین عدد Stop: را بفرستد
+        default_sl = round(mid_entry - 3.0, 2) if dir_clean == "BUY" else round(mid_entry + 3.0, 2)
 
         self.active_signal = {
             "id": int(time.time()),
             "number": sig_num,
-            "direction": "BUY" if "buy" in direction.lower() or "خرید" in direction.lower() else "SELL",
+            "direction": dir_clean,
             "entry_min": entry_min,
             "entry_max": entry_max,
             "entry_price": mid_entry,
             "entry_raw": entry_raw,
-            "stop_loss": None,
+            "stop_loss": default_sl,
+            "is_default_sl": True,
             "budget": self.trade_budget,
             "created_at": time.time(),
             "max_profit": 0.0,
             "max_drawdown": 0.0,
             "is_risk_free": False,
+            "is_win": False,
+            "target_hit": False,
             "entered_zone_alerted": False,
             "profit_alerted_levels": [],
             "is_closed": False,
@@ -80,63 +126,122 @@ class SignalEvaluator:
             "realized_pnl_usd": 0.0
         }
 
+        self._save_active_signal()
+        logger.info(f"✅ سیگنال ورود #{sig_num} با استاپ موقت {default_sl} در دیتابیس ثبت شد.")
         return sig_num, self.evaluate_signal_status(current_price)
 
-    def register_stop(self, stop_val_str: str, current_price: Optional[float]) -> str:
+    def register_stop(self, stop_val_str: str, current_price: Optional[float]) -> Tuple[str, Optional[str]]:
         """
-        ثبت حد ضرر برای سیگنال فعال
+        لینک کردن قطعی پیام Stop Loss به سیگنال فعال و ذخیره در دیتابیس
         """
         try:
             sl = float(stop_val_str)
         except ValueError:
-            return ""
+            return "", None
 
-        if self.active_signal:
-            self.active_signal["stop_loss"] = sl
-            # بررسی لمس فوری
-            if current_price:
-                d = self.active_signal["direction"]
-                if (d == "BUY" and current_price <= sl) or (d == "SELL" and current_price >= sl):
-                    return self.close_trade("LOSS", f"استاپ لاس بلافاصله در قیمت {current_price:.2f} لمس شد.", current_price)
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
 
-        return self.evaluate_signal_status(current_price)
-
-    def register_risk_free(self) -> Optional[str]:
         if self.active_signal and not self.active_signal.get("is_closed"):
-            self.active_signal["is_risk_free"] = True
-            self.active_signal["stop_loss"] = self.active_signal["entry_price"]
-            return "🛡 <b>معامله ریسک‌فری شد</b> (استاپ لاس به نقطه ورود منتقل شد و خطر ضرر صفر شد)."
-        return None
+            self.active_signal["stop_loss"] = sl
+            self.active_signal["is_default_sl"] = False
+            self._save_active_signal()
+            logger.info(f"✅ حد ضرر سیگنال #{self.active_signal['number']} به عدد {sl} در دیتابیس لینک و آپدیت شد.")
+
+            # اگر همین لحظه قیمت به استاپ برخورد کرده باشد (تنها اگر قبلاً تارگت نزده باشد)
+            if current_price and not self.active_signal.get("is_win") and not self.active_signal.get("target_hit"):
+                d = self.active_signal["direction"]
+                is_hit = (d == "BUY" and current_price <= sl) or (d == "SELL" and current_price >= sl)
+                if is_hit:
+                    outcome_report = self.close_trade("LOSS", f"استاپ‌لاس اعلامی ({sl}) بلافاصله در قیمت {current_price:.2f} لمس شد.", current_price)
+                    return f"🛑 <b>حد ضرر لمس شد:</b> <code>{sl}</code>", outcome_report
+
+            return self.evaluate_signal_status(current_price), None
+        else:
+            logger.warning("پیام Stop دریافت شد اما سیگنال بازی در دیتابیس یافت نشد.")
+            return f"🛑 <b>حد ضرر اعلامی:</b> <code>{sl}</code> (سیگنال بازی برای اتصال یافت نشد)", None
+
+    def register_risk_free(self) -> Tuple[bool, str]:
+        """
+        دستور «فری کن / ریسک فری»: انتقال قطعی استاپ به نقطه ورود و فعال‌سازی پرچم برد
+        """
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+
+        if self.active_signal and not self.active_signal.get("is_closed"):
+            sig = self.active_signal
+            sig["is_risk_free"] = True
+            sig["is_win"] = True  # از این لحظه معامله برد تضمین شده است
+            sig["stop_loss"] = sig["entry_price"]  # استاپ به نقطه ورود منتقل شد
+            self._save_active_signal()
+
+            msg = (
+                f"🛡 <b>معامله سیگنال #{sig['number']} ریسک‌فری شد!</b>\n\n"
+                f"📌 حد ضرر (SL) دقیقاً به نقطه ورود (<code>{sig['entry_price']:.2f}</code>) منتقل شد.\n"
+                f"خطر ضرر صفر شد و در صورت برگشت قیمت، معامله سر‌به‌سر بسته می‌شود."
+            )
+            return True, msg
+        return False, "⚠️ سیگنال فعالی برای ریسک‌فری یافت نشد."
+
+    def register_manual_close(self, current_price: Optional[float], reason: str = "دستور بستن (ببند / فول کلوز) توسط ادمین") -> Tuple[bool, str, Optional[str]]:
+        """
+        دستور «ببند / فول کلوز»: بستن فوری سیگنال فعال با قیمت لحظه‌ای بازار
+        """
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+
+        if not self.active_signal or self.active_signal.get("is_closed"):
+            return False, "⚠️ سیگنال بازی برای بستن یافت نشد.", None
+
+        sig = self.active_signal
+        exit_p = current_price or sig["entry_price"]
+        direction = sig["direction"]
+        entry = sig["entry_price"]
+
+        # محاسبه سود یا ضرر لحظه‌ای
+        if direction == "BUY":
+            pnl_points = exit_p - entry
+        else:
+            pnl_points = entry - exit_p
+
+        pips = int(pnl_points * 10)
+        outcome = "WIN" if pnl_points >= 0 else "LOSS"
+
+        outcome_report = self.close_trade(
+            outcome=outcome,
+            reason=f"{reason} در قیمت {exit_p:.2f} ({'+' if pnl_points>=0 else ''}{pnl_points:.2f}$ / {pips} پیپ)",
+            exit_price=exit_p
+        )
+        return True, f"🔒 <b>سیگنال #{sig['number']} با موفقیت بسته شد.</b>", outcome_report
 
     def register_break_even(self, current_price: Optional[float]) -> Optional[str]:
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+
         if self.active_signal and not self.active_signal.get("is_closed"):
             max_p = self.active_signal.get("max_profit", 0.0)
-            if max_p >= 1.5:
-                reason = f"سیگنال ابتدا تا {max_p:.1f}$ سود رفت (+{int(max_p*10)} پیپ) و سپس در نقطه ورود سر‌به‌سر بسته شد."
-                return self.close_trade("BREAK_EVEN_WIN", reason, current_price)
-            else:
-                reason = "سیگنال در نقطه ورود بدون ضرر خروج داده شد."
-                return self.close_trade("BREAK_EVEN", reason, current_price)
+            reason = f"سیگنال پس از ثبت بیشینه سود {max_p:.1f}$ (+{int(max_p*10)} پیپ)، در نقطه ورود سر‌به‌سر بسته شد."
+            return self.close_trade("BREAK_EVEN_WIN", reason, current_price)
         return None
 
     def register_stop_hit_message(self, current_price: Optional[float]) -> Optional[str]:
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+
         if self.active_signal and not self.active_signal.get("is_closed"):
+            # اگر قبلاً تارگت زده بود، حتی اگر استاپ بخورد نباید باخت شود
+            if self.active_signal.get("is_win") or self.active_signal.get("target_hit"):
+                return self.close_trade("BREAK_EVEN_WIN", "ادمین اعلام استاپ کرد اما تارگت قبلاً محقق شده بود و معامله بدون ضرر بسته شد.", current_price)
             return self.close_trade("LOSS", "ادمین کانال اعلام کرد حد ضرر (استاپ) تاچ شد.", current_price)
         return None
 
-    def calculate_dollar_pnl(self, profit_dollars_gold: float, sl_distance: Optional[float], budget: float) -> tuple[float, float]:
-        """
-        محاسبه سود یا ضرر دلاری کاربر بر اساس سرمایه ورودی
-        خروجی: (سود دلاری, درصد بازدهی)
-        """
-        # اگر فاصله استاپ مشخص باشد، محاسبه بر مبنای مدیریت سرمایه استاندارد (Risk-to-Reward)
+    def calculate_dollar_pnl(self, profit_dollars_gold: float, sl_distance: Optional[float], budget: float) -> Tuple[float, float]:
         if sl_distance and sl_distance > 0:
             ratio = profit_dollars_gold / sl_distance
             pnl_usd = round(ratio * budget, 2)
             pct = round(ratio * 100, 1)
             return pnl_usd, pct
         else:
-            # تخمین بر مبنای حرکت هر ۱ دلار طلا = ۵۰٪ سود با اهرم استاندارد روی ۲ دلار
             ratio = profit_dollars_gold / 2.5
             pnl_usd = round(ratio * budget, 2)
             pct = round(ratio * 100, 1)
@@ -147,6 +252,12 @@ class SignalEvaluator:
             return ""
 
         sig = self.active_signal
+
+        # محافظت بحرانی: اگر سیگنال به تارگت سود رسیده باشد یا ریسک‌فری شده باشد، هرگز باخت (-100%) نمی‌خورد!
+        if (sig.get("is_win") or sig.get("target_hit") or sig.get("is_risk_free")) and outcome == "LOSS":
+            outcome = "BREAK_EVEN_WIN"
+            reason = f"سیگنال قبلاً به سود +{sig.get('max_profit', 0.0):.1f}$ (+{int(sig.get('max_profit', 0.0)*10)} پیپ) رسیده بود و در نقطه ورود سر‌به‌سر بسته شد."
+
         sig["is_closed"] = True
         sig["outcome"] = outcome
         sig["outcome_reason"] = reason
@@ -158,10 +269,13 @@ class SignalEvaluator:
         sl = sig.get("stop_loss")
         sl_dist = abs(entry - sl) if sl else 2.5
 
-        # محاسبه سود یا ضرر دلاری نهایی
         if outcome in ["WIN", "BREAK_EVEN_WIN"]:
             max_p = sig.get("max_profit", 0.0)
-            pnl_usd, pnl_pct = self.calculate_dollar_pnl(max_p, sl_dist, budget)
+            if outcome == "BREAK_EVEN_WIN" and max_p < 2.0:
+                pnl_usd = 0.0
+                pnl_pct = 0.0
+            else:
+                pnl_usd, pnl_pct = self.calculate_dollar_pnl(max_p, sl_dist, budget)
             sig["realized_pnl_usd"] = pnl_usd
             sig["realized_pnl_pct"] = pnl_pct
         elif outcome == "LOSS":
@@ -177,7 +291,15 @@ class SignalEvaluator:
         self.trade_history.append(saved_copy)
         self._save_history()
 
-        return self._format_outcome_report(sig)
+        # پاک کردن سیگنال فعال از فایل
+        self.active_signal = None
+        if os.path.exists(self.active_file):
+            try:
+                os.remove(self.active_file)
+            except Exception:
+                pass
+
+        return self._format_outcome_report(saved_copy)
 
     def _format_outcome_report(self, sig: Dict[str, Any]) -> str:
         sig_num = sig.get("number", 1)
@@ -193,10 +315,14 @@ class SignalEvaluator:
 
         stats = self.get_stats_summary()
 
-        if outcome in ["WIN", "BREAK_EVEN_WIN"]:
+        if outcome == "WIN":
             header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: درست درآمد (WIN) ✅</b>"
             badge = "🟢 <b>موفق (سودده)</b>"
             pnl_text = f"💰 <b>سود خالص شما با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>) 🚀"
+        elif outcome == "BREAK_EVEN_WIN":
+            header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: موفق / سر‌به‌سر (WIN) ✅</b>"
+            badge = "🟢 <b>موفق (ریسک‌فری شد)</b>"
+            pnl_text = f"💰 <b>تغییر موجودی شما:</b> <code>+${pnl_usd:.2f}</code> (سرمایه حفظ شد و خطر صفر گردید)"
         elif outcome == "LOSS":
             header = f"🚨 <b>نتیجه نهایی سیگنال #{sig_num}: اشتباه درآمد (LOSS) ❌</b>"
             badge = "🔴 <b>ناموفق (استاپ خورد)</b>"
@@ -232,7 +358,6 @@ class SignalEvaluator:
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
 
-        # محاسبه مجموع سود دلاری کاربر
         total_pnl = sum(t.get("realized_pnl_usd", 0.0) for t in self.trade_history)
         pnl_symbol = "+" if total_pnl >= 0 else ""
 
@@ -242,7 +367,7 @@ class SignalEvaluator:
             f"• <b>سود/زیان کل حساب با سرمایه ${self.trade_budget:.2f}:</b> <code>{pnl_symbol}${total_pnl:.2f}</code>"
         )
 
-    def _parse_entry_range(self, entry_raw: str, current_price: Optional[float]) -> tuple[float, float]:
+    def _parse_entry_range(self, entry_raw: str, current_price: Optional[float]) -> Tuple[float, float]:
         import re
         nums = [float(n) for n in re.findall(r'\d+(?:\.\d+)?', entry_raw)]
         if len(nums) >= 2:
@@ -280,7 +405,7 @@ class SignalEvaluator:
 
             if sl:
                 dist_sl = current_price - sl
-                status_lines.append(f"🛑 <b>فاصله تا استاپ لاس:</b> <code>{dist_sl:.2f}$</code>")
+                status_lines.append(f"🛑 <b>حد ضرر:</b> <code>{sl:.2f}</code> (فاصله: <code>{dist_sl:.2f}$</code>)")
         else:
             if e_min <= current_price <= e_max:
                 status_lines.append("🟢 <b>وضعیت ورود:</b> <b>عالی (در محدوده فروش)</b> ✅")
@@ -293,9 +418,8 @@ class SignalEvaluator:
 
             if sl:
                 dist_sl = sl - current_price
-                status_lines.append(f"🛑 <b>فاصله تا استاپ لاس:</b> <code>{dist_sl:.2f}$</code>")
+                status_lines.append(f"🛑 <b>حد ضرر:</b> <code>{sl:.2f}</code> (فاصله: <code>{dist_sl:.2f}$</code>)")
 
-        # برآورد سود با سرمایه کاربر
         sl_dist = abs(sig["entry_price"] - sl) if sl else 2.5
         profit_estimate_1, _ = self.calculate_dollar_pnl(2.0, sl_dist, budget)
         profit_estimate_2, _ = self.calculate_dollar_pnl(3.5, sl_dist, budget)
@@ -309,6 +433,14 @@ class SignalEvaluator:
         return "\n".join(status_lines)
 
     def check_live_status_change(self, current_price: float) -> Optional[str]:
+        """
+        پایش ثانیه‌ای:
+        - اگر قیمت به تارگت رسید: بلافاصله استاپ به نقطه ورود منتقل و is_win فعال می‌شود.
+        - اگر قیمت به استاپ بخورد، فقط زمانی LOSS می‌شود که قبلاً تارگت نزده باشد.
+        """
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+
         if not self.active_signal or self.active_signal.get("is_closed") or not current_price:
             return None
 
@@ -333,28 +465,43 @@ class SignalEvaluator:
         if drawdown > sig["max_drawdown"]:
             sig["max_drawdown"] = drawdown
 
-        # ۱. لمس استاپ لاس
-        if sl:
-            is_stopped = (direction == "BUY" and current_price <= sl) or (direction == "SELL" and current_price >= sl)
-            if is_stopped:
-                return self.close_trade("LOSS", f"قیمت طلا به {current_price:.2f} رسید و حد ضرر لمس شد.", current_price)
+        # ۱. رسیدن به تارگت سود (مثلاً سود ۲ دلار یا ۲۰ پیپ به بالا):
+        # با رسیدن به تارگت، بلافاصله استاپ به نقطه ورود منتقل و معامله برد تثبیت می‌شود!
+        if cur_profit >= 2.0 and not sig.get("target_hit"):
+            sig["target_hit"] = True
+            sig["is_win"] = True
+            sig["is_risk_free"] = True
+            sig["stop_loss"] = entry  # استاپ به نقطه ورود منتقل شد
+            self._save_active_signal()
 
-        # ۲. رسیدن به تارگت سود
-        sl_dist = abs(entry - sl) if sl else 2.5
-        pnl_usd, pnl_pct = self.calculate_dollar_pnl(cur_profit, sl_dist, budget)
+            sl_dist = abs(entry - sl) if sl else 2.5
+            pnl_usd, pnl_pct = self.calculate_dollar_pnl(cur_profit, sl_dist, budget)
 
-        if cur_profit >= 3.0 and "profit_3" not in sig["profit_alerted_levels"]:
-            sig["profit_alerted_levels"].append("profit_3")
             return (
                 f"🎯 <b>تارگت سیگنال #{sig_num} محقق شد! (+{cur_profit:.1f}$)</b>\n\n"
                 f"طلا به سود <b>+{int(cur_profit*10)} پیپ</b> رسید!\n"
                 f"💵 قیمت لحظه‌ای: <code>${current_price:.2f}</code>\n"
-                f"💰 <b>سود شما تا الان با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>) 🚀"
+                f"💰 <b>سود شما تا الان با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>) 🚀\n\n"
+                f"🛡 <b>حد ضرر به صورت خودکار به نقطه ورود ({entry:.2f}) منتقل و معامله ریسک‌فری شد.</b>\n"
+                f"✅ این معامله به عنوان برد (WIN) تثبیت شد و دیگر امکان باخت ندارد."
             )
 
-        # ۳. ورود به محدوده
+        # ۲. بررسی بازگشت قیمت به نقطه ورود پس از تاچ تارگت یا ریسک‌فری:
+        if sig.get("target_hit") or sig.get("is_risk_free"):
+            is_returned_to_entry = (direction == "BUY" and current_price <= entry) or (direction == "SELL" and current_price >= entry)
+            if is_returned_to_entry:
+                return self.close_trade("BREAK_EVEN_WIN", f"سیگنال پس از تاچ تارگت (+{sig['max_profit']:.1f}$)، در نقطه ورود سر‌به‌سر بسته شد.", current_price)
+
+        # ۳. لمس استاپ‌لاس اصلی (فقط در صورتی که تارگت نزده باشد):
+        if sl and not sig.get("is_win") and not sig.get("target_hit"):
+            is_stopped = (direction == "BUY" and current_price <= sl) or (direction == "SELL" and current_price >= sl)
+            if is_stopped:
+                return self.close_trade("LOSS", f"قیمت طلا به {current_price:.2f} رسید و حد ضرر ({sl}) لمس شد.", current_price)
+
+        # ۴. ورود به محدوده
         if not sig["entered_zone_alerted"] and (e_min <= current_price <= e_max):
             sig["entered_zone_alerted"] = True
+            self._save_active_signal()
             return (
                 f"🎯 <b>سیگنال #{sig_num}: طلا وارد زون ورود شد!</b>\n\n"
                 f"جهت: <b>{direction}</b> | قیمت: <code>${current_price:.2f}</code>\n"
@@ -362,9 +509,9 @@ class SignalEvaluator:
                 f"⚡️ اکنون پوزیشن با ${budget:.2f} آماده است."
             )
 
-        # ۴. منقضی کردن بعد از ۴۵ دقیقه
+        # ۵. منقضی کردن بعد از ۴۵ دقیقه
         if time.time() - sig["created_at"] > 2700:
-            if sig["max_profit"] >= 2.0:
+            if sig.get("is_win") or sig["max_profit"] >= 2.0:
                 return self.close_trade("WIN", f"سیگنال پس از ثبت بیشینه سود +{sig['max_profit']:.1f}$ به پایان رسید.", current_price)
             else:
                 return self.close_trade("EXPIRED", "سیگنال پس از ۴۵ دقیقه به پایان رسید.", current_price)
@@ -372,11 +519,9 @@ class SignalEvaluator:
         return None
 
     def mark_user_participation(self, signal_number: int, entered: bool) -> str:
-        """
-        ثبت اینکه کاربر واقعاً وارد این معامله شده یا آن را رد کرده است
-        """
         if self.active_signal and self.active_signal.get("number") == signal_number:
             self.active_signal["user_entered"] = entered
+            self._save_active_signal()
 
         for t in self.trade_history:
             if t.get("number") == signal_number:
@@ -390,11 +535,7 @@ class SignalEvaluator:
             return f"⏭ سیگنال #{signal_number} از کارنامه شخصی شما رد شد."
 
     def get_daily_summary(self) -> str:
-        """
-        محاسبه کارنامه و بیلان روزانه عملکرد سیگنال‌های طلا (ساعت ۲۳:۰۰ یا دستی)
-        """
         from datetime import datetime, timezone, timedelta
-        # ساعت رسمی ایران (UTC+3:30)
         tz = timezone(timedelta(hours=3, minutes=30))
         now = datetime.now(tz)
         today_str = now.strftime("%Y-%m-%d")
@@ -419,7 +560,6 @@ class SignalEvaluator:
         total_pnl = sum(t.get("realized_pnl_usd", 0.0) for t in today_trades)
         total_pips = sum(int(t.get("max_profit", 0.0) * 10) for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
 
-        # معاملات شخصی کاربر
         my_trades = [t for t in today_trades if t.get("user_entered") is True]
         my_wins = sum(1 for t in my_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
         my_losses = sum(1 for t in my_trades if t.get("outcome") == "LOSS")

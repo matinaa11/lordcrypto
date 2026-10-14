@@ -12,66 +12,110 @@ class GoldTracker:
         self.current_price: float | None = None
         self.last_update_time: float = 0
         self.is_running = False
+        self._consecutive_spikes = 0
 
     def _fetch_from_gold_api(self) -> float | None:
+        """
+        منبع اول: نرخ اسپات لحظه‌ای طلای جهانی (Spot XAU/USD)
+        """
         url = "https://api.gold-api.com/price/XAU"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            return float(data.get("price"))
-
-    def _fetch_from_yahoo(self) -> float | None:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            return float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
+            price = data.get("price")
+            if price:
+                return float(price)
+            return None
 
     def _fetch_from_binance(self) -> float | None:
+        """
+        منبع دوم: توکن طلای بایننس با پشتوانه فیزیکی طلا (PAXGUSDT)
+        قیمت PAXG دقیقاً برابر با انس اسپات طلا است.
+        """
         url = "https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            return float(data.get("price"))
+            price = data.get("price")
+            if price:
+                return float(price)
+            return None
+
+    def _fetch_from_yahoo(self) -> float | None:
+        """
+        منبع سوم: یاهو فایننس جفت‌ارز اسپات طلا (XAUUSD=X)
+        توجه مهم: هرگز از GC=F (فیوچرز کامکس با اختلاف ۲۰ دلار) استفاده نمی‌شود!
+        """
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            meta = data["chart"]["result"][0]["meta"]
+            price = meta.get("regularMarketPrice")
+            if price:
+                return float(price)
+            return None
 
     def fetch_price_sync(self) -> float | None:
         """
-        تلاش برای دریافت قیمت از چند منبع با اولویت (Fallback Mechanism)
+        دریافت قیمت اسپات واقعی طلا با سیستم Fallback و فیلتر جهش کاذب
         """
-        # ۱. منبع اول: gold-api.com (Spot XAUUSD)
+        raw_price = None
+
+        # ۱. تلاش از منبع اصلی Spot XAUUSD
         try:
             p = self._fetch_from_gold_api()
-            if p: return p
+            if p and p > 1000:
+                raw_price = p
         except Exception as e:
             logger.debug(f"gold-api error: {e}")
 
-        # ۲. منبع دوم: بایننس (روی سرورهای خارجی ریل‌وی بدون تحریم کار می‌کند)
-        try:
-            p = self._fetch_from_binance()
-            if p: return p
-        except Exception as e:
-            logger.debug(f"binance error: {e}")
+        # ۲. تلاش از بایننس PAXGUSDT (روی سرور بدون تحریم کار می‌کند)
+        if not raw_price:
+            try:
+                p = self._fetch_from_binance()
+                if p and p > 1000:
+                    raw_price = p
+            except Exception as e:
+                logger.debug(f"binance error: {e}")
 
-        # ۳. منبع سوم: یاهو فایننس (انس جهانی)
-        try:
-            p = self._fetch_from_yahoo()
-            if p: return p
-        except Exception as e:
-            logger.debug(f"yahoo error: {e}")
+        # ۳. تلاش از یاهو فایننس (جفت‌ارز فارکس اسپات XAUUSD=X و نه فیوچرز GC=F)
+        if not raw_price:
+            try:
+                p = self._fetch_from_yahoo()
+                if p and p > 1000:
+                    raw_price = p
+            except Exception as e:
+                logger.debug(f"yahoo spot error: {e}")
 
-        return None
+        if not raw_price:
+            return None
+
+        # فیلتر حفاظتی جهش غیرعادی (Spike Filter):
+        # اگر منبعی به اشتباه قیمتی با اختلاف بیش از ۶ دلار نسبت به قیمت قبلی بدهد (مثلاً پرش ۲۰ دلاری فیوچرز)،
+        # بلافاصله رد می‌شود تا استاپ‌لاس کاذب نخورد.
+        if self.current_price is not None:
+            diff = abs(raw_price - self.current_price)
+            if diff > 6.0:
+                logger.warning(
+                    f"⚠️ پرش غیرعادی قیمت رد شد: قیمت قبلی={self.current_price:.2f} | قیمت دریافتی={raw_price:.2f} (اختلاف={diff:.2f}$)"
+                )
+                self._consecutive_spikes += 1
+                if self._consecutive_spikes < 3:
+                    # قیمت غیرعادی رد می‌شود و قیمت قبلی معتبر می‌ماند
+                    return self.current_price
+            else:
+                self._consecutive_spikes = 0
+
+        return raw_price
 
     async def run_loop(self):
-        """
-        حلقه نامتقارن برای بروزرسانی قیمت هر چند ثانیه یکبار
-        """
         self.is_running = True
-        logger.info("📡 رصدگر قیمت لحظه‌ای طلای جهانی استارت شد...")
+        logger.info("📡 رصدگر قیمت لحظه‌ای طلای جهانی (Spot XAUUSD) استارت شد...")
 
         loop = asyncio.get_running_loop()
         while self.is_running:
             try:
-                # اجرای فراخوانی شبکه در ترد جداگانه تا ایونت‌لوپ مسدود نشود
                 price = await loop.run_in_executor(None, self.fetch_price_sync)
                 if price:
                     self.current_price = round(price, 2)
@@ -83,9 +127,6 @@ class GoldTracker:
             await asyncio.sleep(self.update_interval)
 
     def get_price(self) -> float | None:
-        """
-        برگرداندن آنی قیمت کش‌شده در حافظه (بدون هیچ تاخیر و پینگ شبکه)
-        """
         return self.current_price
 
 # نمونه سراسری

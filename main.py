@@ -302,17 +302,25 @@ async def handle_channel_message(msg_id: int, raw_text: str):
         stop_match = re.search(r'(?:stop|استاپ|sl)\s*[:=]?\s*([0-9\.]+)', raw_text.lower())
         if stop_match:
             stop_val = stop_match.group(1)
-            analysis = evaluator.register_stop(stop_val, current_price)
+            analysis, sl_outcome = evaluator.register_stop(stop_val, current_price)
             extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>وضعیت حد ضرر نسبت به بازار:</b>\n{analysis}"
+            if sl_outcome:
+                outcome_report = sl_outcome
 
     elif cat == "ACTION_RISKFREE":
-        rf_msg = evaluator.register_risk_free()
-        extra_analysis = f"\n\n{rf_msg}\n💵 <i>قیمت فعلی طلا: ${current_price:.2f}</i>" if current_price else ""
+        success, rf_msg = evaluator.register_risk_free()
+        extra_analysis = f"\n\n{rf_msg}\n💵 <i>قیمت فعلی طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{rf_msg}"
+
+    elif cat == "ACTION_CLOSE":
+        success, close_notice, close_outcome = evaluator.register_manual_close(current_price)
+        extra_analysis = f"\n\n{close_notice}\n💵 <i>قیمت لحظه‌ای طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{close_notice}"
+        if close_outcome:
+            outcome_report = close_outcome
 
     elif cat == "ACTION_STOP_HIT":
         outcome_report = evaluator.register_stop_hit_message(current_price)
 
-    elif cat == "MANAGEMENT_INFO" and "برگشت ورود" in raw_text:
+    elif cat == "MANAGEMENT_INFO" and any(k in raw_text for k in ["برگشت ورود", "فری شد", "فری خورد"]):
         outcome_report = evaluator.register_break_even(current_price)
 
     elif current_price:
