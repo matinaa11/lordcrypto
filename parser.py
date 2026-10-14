@@ -60,8 +60,24 @@ def parse_lordxau_message(text: str):
         return ("ALERT_READY", "آماده‌باش سیگنال", msg, True)
 
     # ۴. مدیریت پوزیشن (ریسک‌فری / بستن معامله / استاپ تاچ)
-    # دستور فری کن / ریسک فری
-    if re.search(r'(?:فری\s*(?:ش?\s*کن(?:ید)?|زد|شد|کنیم|بزنید)|ریسک\s*فری)', cleaned):
+    # فیلتر امنیتی ۱: کلمات منفی و نفی
+    negative_command_keywords = [
+        "نکن", "نکنید", "نکنین", 
+        "نبند", "نبندید", "نبندین", 
+        "فعلا نه", "فعلاً نه", "دست نزن", "دست نزنید"
+    ]
+    has_negation = any(k in cleaned for k in negative_command_keywords)
+
+    # اگر پیام دارای کلمات نفی همراه با واژه‌های معاملاتی باشد، کلاً نادیده گرفته می‌شود
+    if has_negation and any(k in cleaned for k in ["ببند", "کلوز", "فری", "خروج", "استاپ", "سل", "بای"]):
+        return None
+
+    # فیلتر امنیتی ۲: طول پیام (دستورات واقعی ادمین کوتاه هستند: حداکثر ۵ کلمه و ۳۵ کاراکتر)
+    words_count = len(cleaned.split())
+    is_short_command = (words_count <= 5 and len(cleaned) <= 35)
+
+    # دستور فری کن / ریسک فری (فقط در پیام‌های کوتاه و بدون کلمات نفی)
+    if is_short_command and not has_negation and re.search(r'(?:فری\s*(?:ش?\s*کن(?:ید)?|زد|شد|کنیم|بزنید)|ریسک\s*فری)', cleaned):
         msg = (
             f"🛡 <b>ریسک‌فری معامله (Risk Free)</b> 🛡\n\n"
             f"📌 حد ضرر (SL) فوراً به نقطه ورود منتقل و معامله ریسک‌فری شد.\n\n"
@@ -69,8 +85,8 @@ def parse_lordxau_message(text: str):
         )
         return ("ACTION_RISKFREE", "ریسک‌فری کنید", msg, True)
 
-    # دستور ببند / فول کلوز
-    if re.search(r'(?:ببند(?:ید)?|فول\s*کلوز|کامل\s*ببند(?:ید)?|خروج\s*کامل|سیو\s*سود\s*کامل|خروج\s*بزنید|ببندیم|کلوز\s*کنید)', cleaned):
+    # دستور ببند / فول کلوز (فقط در پیام‌های کوتاه و بدون کلمات نفی)
+    if is_short_command and not has_negation and re.search(r'(?:ببند(?:ید)?|فول\s*کلوز|کامل\s*ببند(?:ید)?|خروج\s*کامل|سیو\s*سود\s*کامل|خروج\s*بزنید|ببندیم|کلوز\s*کنید)', cleaned):
         msg = (
             f"🚨 <b>دستور خروج و بستن معامله (Full Close)</b> 🚨\n\n"
             f"📌 معامله را فوراً در قیمت فعلی بازار ببندید.\n\n"

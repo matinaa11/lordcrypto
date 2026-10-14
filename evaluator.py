@@ -230,8 +230,10 @@ class SignalEvaluator:
 
         if self.active_signal and not self.active_signal.get("is_closed"):
             # اگر قبلاً تارگت زده بود، حتی اگر استاپ بخورد نباید باخت شود
-            if self.active_signal.get("is_win") or self.active_signal.get("target_hit"):
-                return self.close_trade("BREAK_EVEN_WIN", "ادمین اعلام استاپ کرد اما تارگت قبلاً محقق شده بود و معامله بدون ضرر بسته شد.", current_price)
+            if self.active_signal.get("target_hit"):
+                return self.close_trade("PARTIAL_WIN_THEN_SL", "ادمین اعلام استاپ کرد، اما تارگت سود قبلاً محقق شده بود و معامله با سود تارگت بسته شد.", current_price)
+            if self.active_signal.get("is_win") or self.active_signal.get("is_risk_free"):
+                return self.close_trade("BREAK_EVEN_WIN", "ادمین اعلام استاپ کرد اما معامله ریسک‌فری شده بود و بدون ضرر بسته شد.", current_price)
             return self.close_trade("LOSS", "ادمین کانال اعلام کرد حد ضرر (استاپ) تاچ شد.", current_price)
         return None
 
@@ -255,8 +257,12 @@ class SignalEvaluator:
 
         # محافظت بحرانی: اگر سیگنال به تارگت سود رسیده باشد یا ریسک‌فری شده باشد، هرگز باخت (-100%) نمی‌خورد!
         if (sig.get("is_win") or sig.get("target_hit") or sig.get("is_risk_free")) and outcome == "LOSS":
-            outcome = "BREAK_EVEN_WIN"
-            reason = f"سیگنال قبلاً به سود +{sig.get('max_profit', 0.0):.1f}$ (+{int(sig.get('max_profit', 0.0)*10)} پیپ) رسیده بود و در نقطه ورود سر‌به‌سر بسته شد."
+            if sig.get("target_hit"):
+                outcome = "PARTIAL_WIN_THEN_SL"
+                reason = f"سیگنال ابتدا به تارگت سود (+{sig.get('max_profit', 0.0):.1f}$ / +{int(sig.get('max_profit', 0.0)*10)} پیپ) رسید و در برگشت استاپ خورد."
+            else:
+                outcome = "BREAK_EVEN_WIN"
+                reason = f"سیگنال قبلاً به سود +{sig.get('max_profit', 0.0):.1f}$ (+{int(sig.get('max_profit', 0.0)*10)} پیپ) رسیده بود و در نقطه ورود سر‌به‌سر بسته شد."
 
         sig["is_closed"] = True
         sig["outcome"] = outcome
@@ -269,7 +275,7 @@ class SignalEvaluator:
         sl = sig.get("stop_loss")
         sl_dist = abs(entry - sl) if sl else 2.5
 
-        if outcome in ["WIN", "BREAK_EVEN_WIN"]:
+        if outcome in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"]:
             max_p = sig.get("max_profit", 0.0)
             if outcome == "BREAK_EVEN_WIN" and max_p < 2.0:
                 pnl_usd = 0.0
@@ -319,6 +325,10 @@ class SignalEvaluator:
             header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: درست درآمد (WIN) ✅</b>"
             badge = "🟢 <b>موفق (سودده)</b>"
             pnl_text = f"💰 <b>سود خالص شما با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>) 🚀"
+        elif outcome == "PARTIAL_WIN_THEN_SL":
+            header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: تارگت محقق شده (سپس استاپ) ✅</b>"
+            badge = "🟡 <b>تارگت اول زده شد (Partial Win)</b>"
+            pnl_text = f"💰 <b>سود ثبت‌شده تارگت با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>)\n⚠️ <i>معامله ابتدا به تارگت رسید و سود خود را ثبت کرد، سپس با بازگشت بازار استاپ خورد.</i>"
         elif outcome == "BREAK_EVEN_WIN":
             header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: موفق / سر‌به‌سر (WIN) ✅</b>"
             badge = "🟢 <b>موفق (ریسک‌فری شد)</b>"
@@ -353,7 +363,7 @@ class SignalEvaluator:
         if not self.trade_history:
             return f"<i>هنوز سابقه‌ای ثبت نشده است. (سرمایه هر معامله: ${self.trade_budget:.2f})</i>"
 
-        wins = sum(1 for t in self.trade_history if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
+        wins = sum(1 for t in self.trade_history if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
         losses = sum(1 for t in self.trade_history if t.get("outcome") == "LOSS")
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
@@ -466,37 +476,46 @@ class SignalEvaluator:
             sig["max_drawdown"] = drawdown
 
         # ۱. رسیدن به تارگت سود (مثلاً سود ۲ دلار یا ۲۰ پیپ به بالا):
-        # با رسیدن به تارگت، بلافاصله استاپ به نقطه ورود منتقل و معامله برد تثبیت می‌شود!
+        # توجه: فلگ‌های برد و تارگت فعال می‌شوند، اما استاپ تا زمان اعلام ادمین جابه‌جا نمی‌شود.
         if cur_profit >= 2.0 and not sig.get("target_hit"):
             sig["target_hit"] = True
             sig["is_win"] = True
-            sig["is_risk_free"] = True
-            sig["stop_loss"] = entry  # استاپ به نقطه ورود منتقل شد
+            # توجه: sig["is_risk_free"] و stop_loss تغییر نمی‌کنند تا معامله با اصلاح کوچک زودهنگام بسته نشود.
             self._save_active_signal()
 
             sl_dist = abs(entry - sl) if sl else 2.5
             pnl_usd, pnl_pct = self.calculate_dollar_pnl(cur_profit, sl_dist, budget)
+            sl_info = f"<code>{sl:.2f}</code>" if sl else "استاپ اولیه"
 
             return (
                 f"🎯 <b>تارگت سیگنال #{sig_num} محقق شد! (+{cur_profit:.1f}$)</b>\n\n"
-                f"طلا به سود <b>+{int(cur_profit*10)} پیپ</b> رسید!\n"
+                f"طلا به سود <b>+{int(cur_profit*10)} پیپ</b> رسید! 🚀\n"
                 f"💵 قیمت لحظه‌ای: <code>${current_price:.2f}</code>\n"
-                f"💰 <b>سود شما تا الان با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>) 🚀\n\n"
-                f"🛡 <b>حد ضرر به صورت خودکار به نقطه ورود ({entry:.2f}) منتقل و معامله ریسک‌فری شد.</b>\n"
-                f"✅ این معامله به عنوان برد (WIN) تثبیت شد و دیگر امکان باخت ندارد."
+                f"💰 <b>سود شما تا الان با سرمایه ${budget:.2f}:</b> <code>+${pnl_usd:.2f}</code> (<b>+{pnl_pct:.0f}%</b>)\n\n"
+                f"✅ تارگت اول محقق شد و معامله به عنوان برد (WIN) ثبت گردید.\n"
+                f"📌 حد ضرر روی استاپ اصلی ادمین ({sl_info}) حفظ شده و با ارسال دستور «فری کن» در کانال به نقطه ورود منتقل خواهد شد."
             )
 
-        # ۲. بررسی بازگشت قیمت به نقطه ورود پس از تاچ تارگت یا ریسک‌فری:
-        if sig.get("target_hit") or sig.get("is_risk_free"):
+        # ۲. بررسی بازگشت قیمت به نقطه ورود (فقط در صورتی که ادمین معامله را ریسک‌فری کرده باشد):
+        if sig.get("is_risk_free"):
             is_returned_to_entry = (direction == "BUY" and current_price <= entry) or (direction == "SELL" and current_price >= entry)
             if is_returned_to_entry:
-                return self.close_trade("BREAK_EVEN_WIN", f"سیگنال پس از تاچ تارگت (+{sig['max_profit']:.1f}$)، در نقطه ورود سر‌به‌سر بسته شد.", current_price)
+                return self.close_trade("BREAK_EVEN_WIN", f"سیگنال پس از ریسک‌فری، در نقطه ورود سر‌به‌سر بسته شد.", current_price)
 
-        # ۳. لمس استاپ‌لاس اصلی (فقط در صورتی که تارگت نزده باشد):
-        if sl and not sig.get("is_win") and not sig.get("target_hit"):
+        # ۳. لمس حد ضرر:
+        if sl:
             is_stopped = (direction == "BUY" and current_price <= sl) or (direction == "SELL" and current_price >= sl)
             if is_stopped:
-                return self.close_trade("LOSS", f"قیمت طلا به {current_price:.2f} رسید و حد ضرر ({sl}) لمس شد.", current_price)
+                if sig.get("target_hit"):
+                    return self.close_trade(
+                        "PARTIAL_WIN_THEN_SL",
+                        f"سیگنال ابتدا تارگت اول (+{sig['max_profit']:.1f}$ / +{int(sig['max_profit']*10)} پیپ) را تاچ کرد و در بازگشت بازار، حد ضرر ({sl:.2f}) لمس شد.",
+                        current_price
+                    )
+                elif sig.get("is_risk_free") or sig.get("is_win"):
+                    return self.close_trade("BREAK_EVEN_WIN", f"حد ضرر ریسک‌فری ({sl:.2f}) لمس شد.", current_price)
+                else:
+                    return self.close_trade("LOSS", f"قیمت طلا به {current_price:.2f} رسید و حد ضرر ({sl:.2f}) لمس شد.", current_price)
 
         # ۴. ورود به محدوده
         if not sig["entered_zone_alerted"] and (e_min <= current_price <= e_max):
@@ -553,15 +572,15 @@ class SignalEvaluator:
         if not today_trades and not self.active_signal:
             return f"🌙 <b>گزارش پایان روز ({today_str}):</b>\n\nامروز هیچ سیگنالی بسته نشده است."
 
-        wins = sum(1 for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
+        wins = sum(1 for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
         losses = sum(1 for t in today_trades if t.get("outcome") == "LOSS")
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
         total_pnl = sum(t.get("realized_pnl_usd", 0.0) for t in today_trades)
-        total_pips = sum(int(t.get("max_profit", 0.0) * 10) for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
+        total_pips = sum(int(t.get("max_profit", 0.0) * 10) for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
 
         my_trades = [t for t in today_trades if t.get("user_entered") is True]
-        my_wins = sum(1 for t in my_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN"])
+        my_wins = sum(1 for t in my_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
         my_losses = sum(1 for t in my_trades if t.get("outcome") == "LOSS")
         my_pnl = sum(t.get("realized_pnl_usd", 0.0) for t in my_trades)
 
