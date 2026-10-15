@@ -28,9 +28,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 USER_CHAT_ID = os.getenv("USER_CHAT_ID")
 TARGET_CHANNEL = os.getenv("TARGET_CHANNEL", "lordxau").strip()
-DEFAULT_BUDGET = float(os.getenv("TRADE_BUDGET_USD", "2.0"))
-
-evaluator.set_budget(DEFAULT_BUDGET)
 
 def check_env():
     missing = []
@@ -52,23 +49,101 @@ def get_main_menu_keyboard():
                 {"text": "📊 کارنامه و آمار کل", "callback_data": "check_stats"}
             ],
             [
-                {"text": "💰 تغییر سرمایه معامله", "callback_data": "menu_budget"},
-                {"text": "🌙 گزارش عملکرد امروز", "callback_data": "today_digest"}
+                {"text": "⚙️ تنظیمات معامله و کارمزد", "callback_data": "settings_main"},
+                {"text": "🌙 گزارش امروز", "callback_data": "today_digest"}
             ]
         ]
     }
 
-def get_budget_selection_keyboard():
+def get_settings_menu_keyboard(mode: str = "OURBIT_FUTURES"):
+    mode_btn_text = "🔄 سوییچ به Forex MT5 (لات)" if mode == "OURBIT_FUTURES" else "🔄 سوییچ به Ourbit (اهرم)"
     return {
         "inline_keyboard": [
             [
-                {"text": "1$", "callback_data": "set_budget_1"},
-                {"text": "2$", "callback_data": "set_budget_2"},
-                {"text": "5$", "callback_data": "set_budget_5"},
-                {"text": "10$", "callback_data": "set_budget_10"}
+                {"text": mode_btn_text, "callback_data": "settings_toggle_mode"}
+            ],
+            [
+                {"text": "💰 تغییر سرمایه ($)", "callback_data": "settings_menu_balance"},
+                {"text": "⚡ تغییر اهرم (Leverage)", "callback_data": "settings_menu_leverage"}
+            ],
+            [
+                {"text": "📊 تغییر حجم لات (Lot)", "callback_data": "settings_menu_lot"},
+                {"text": "💸 تغییر کارمزد (Fee %)", "callback_data": "settings_menu_fee"}
             ],
             [
                 {"text": "🔙 بازگشت به منوی اصلی", "callback_data": "main_menu"}
+            ]
+        ]
+    }
+
+def get_balance_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "5$", "callback_data": "set_balance_5"},
+                {"text": "10$", "callback_data": "set_balance_10"},
+                {"text": "15$", "callback_data": "set_balance_15"},
+                {"text": "50$", "callback_data": "set_balance_50"}
+            ],
+            [
+                {"text": "100$", "callback_data": "set_balance_100"},
+                {"text": "200$", "callback_data": "set_balance_200"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+            ]
+        ]
+    }
+
+def get_leverage_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "20x", "callback_data": "set_leverage_20"},
+                {"text": "50x", "callback_data": "set_leverage_50"},
+                {"text": "100x", "callback_data": "set_leverage_100"}
+            ],
+            [
+                {"text": "200x", "callback_data": "set_leverage_200"},
+                {"text": "500x", "callback_data": "set_leverage_500"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+            ]
+        ]
+    }
+
+def get_lot_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "0.01 لات", "callback_data": "set_lot_0.01"},
+                {"text": "0.02 لات", "callback_data": "set_lot_0.02"}
+            ],
+            [
+                {"text": "0.05 لات", "callback_data": "set_lot_0.05"},
+                {"text": "0.10 لات", "callback_data": "set_lot_0.10"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+            ]
+        ]
+    }
+
+def get_fee_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "0.04% (Market / Taker Ourbit)", "callback_data": "set_fee_market"}
+            ],
+            [
+                {"text": "0.02% (Limit / Maker Ourbit)", "callback_data": "set_fee_limit"}
+            ],
+            [
+                {"text": "0% (بدون کارمزد / فارکس خام)", "callback_data": "set_fee_zero"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
             ]
         ]
     }
@@ -149,24 +224,6 @@ async def bot_command_listener():
                                         reply_markup=get_main_menu_keyboard()
                                     )
 
-                                elif cb_data == "menu_budget":
-                                    await answer_callback_query(BOT_TOKEN, cb_id)
-                                    await send_telegram_alert(
-                                        BOT_TOKEN, USER_CHAT_ID, 
-                                        f"💰 <b>سرمایه فعلی هر معامله: ${evaluator.trade_budget:.2f}</b>\n\nمبلغ جدید را انتخاب کنید:",
-                                        reply_markup=get_budget_selection_keyboard()
-                                    )
-
-                                elif cb_data.startswith("set_budget_"):
-                                    amount = float(cb_data.replace("set_budget_", ""))
-                                    res = evaluator.set_budget(amount)
-                                    await answer_callback_query(BOT_TOKEN, cb_id, f"سرمایه به ${amount:.2f} تغییر یافت")
-                                    await send_telegram_alert(
-                                        BOT_TOKEN, USER_CHAT_ID, 
-                                        f"{res}\n\nاز این پس تمام سودها با سرمایه <b>${amount:.2f}</b> محاسبه می‌شوند.",
-                                        reply_markup=get_main_menu_keyboard()
-                                    )
-
                                 elif cb_data == "main_menu":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
                                     await send_telegram_alert(
@@ -174,6 +231,111 @@ async def bot_command_listener():
                                         "منوی اصلی کنترل ربات:", 
                                         reply_markup=get_main_menu_keyboard()
                                     )
+
+                                # ── منوی تنظیمات معامله و کارمزد ──
+                                elif cb_data == "settings_main":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    text = evaluator.get_settings_summary_text()
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        text, 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
+                                elif cb_data == "settings_toggle_mode":
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    new_mode = "FOREX_MT5" if cur_mode == "OURBIT_FUTURES" else "OURBIT_FUTURES"
+                                    res = evaluator.set_mode(new_mode)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "پلتفرم با موفقیت تغییر یافت")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}",
+                                        reply_markup=get_settings_menu_keyboard(new_mode)
+                                    )
+
+                                elif cb_data == "settings_menu_balance" or cb_data == "menu_budget":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"💰 <b>سرمایه مارجین فعلی: ${evaluator.trade_budget:.2f}</b>\n\nمبلغ دلخواه را انتخاب کنید یا دستور <code>/balance [عدد]</code> را بفرستید:",
+                                        reply_markup=get_balance_selection_keyboard()
+                                    )
+
+                                elif cb_data.startswith("set_balance_") or cb_data.startswith("set_budget_"):
+                                    amount = float(cb_data.replace("set_balance_", "").replace("set_budget_", ""))
+                                    res = evaluator.set_balance(amount)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"سرمایه به ${amount:.2f} تغییر یافت")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
+                                elif cb_data == "settings_menu_leverage":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"⚡️ <b>اهرم فعلی فیوچرز: {evaluator.settings.get('leverage', 100)}x</b>\n\nضریب اهرم جدید را انتخاب کنید یا دستور <code>/leverage [عدد]</code> را بفرستید:",
+                                        reply_markup=get_leverage_selection_keyboard()
+                                    )
+
+                                elif cb_data.startswith("set_leverage_"):
+                                    lev = int(cb_data.replace("set_leverage_", ""))
+                                    res = evaluator.set_leverage(lev)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"اهرم به {lev}x تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
+                                elif cb_data == "settings_menu_lot":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"📊 <b>حجم فعلی معامله فارکس: {evaluator.settings.get('lot_size', 0.01)} Lot</b>\n\nحجم جدید را انتخاب کنید یا دستور <code>/lot [عدد]</code> را بفرستید:",
+                                        reply_markup=get_lot_selection_keyboard()
+                                    )
+
+                                elif cb_data.startswith("set_lot_"):
+                                    lot = float(cb_data.replace("set_lot_", ""))
+                                    res = evaluator.set_lot_size(lot)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"حجم به {lot} Lot تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
+                                elif cb_data == "settings_menu_fee":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"💸 <b>کارمزد فعلی: {evaluator.settings.get('fee_rate', 0.04)}% ({evaluator.settings.get('order_type', 'MARKET')})</b>\n\nنرخ کارمزد صرافی را انتخاب کنید یا دستور <code>/fee [درصد]</code> را بفرستید:",
+                                        reply_markup=get_fee_selection_keyboard()
+                                    )
+
+                                elif cb_data == "set_fee_market":
+                                    res = evaluator.set_order_type("MARKET")
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد 0.04% مارکت تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                elif cb_data == "set_fee_limit":
+                                    res = evaluator.set_order_type("LIMIT")
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد 0.02% لیمیت تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                elif cb_data == "set_fee_zero":
+                                    res = evaluator.set_order_type("ZERO")
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد صفر تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
 
                                 elif cb_data.startswith("enter_trade_"):
                                     sig_n = int(cb_data.replace("enter_trade_", ""))
@@ -206,12 +368,57 @@ async def bot_command_listener():
                                 if not text:
                                     continue
 
-                                budget_match = re.search(r'(?:/budget|بودجه|مبلغ|سرمایه)\s*([0-9\.]+)', text)
-                                if budget_match:
-                                    new_val = float(budget_match.group(1))
-                                    res = evaluator.set_budget(new_val)
-                                    reply = f"{res}\n\nمحاسبات به سرمایه <b>${new_val:.2f}</b> تغییر یافت."
-                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_main_menu_keyboard())
+                                # تغییر سرمایه / بالانس
+                                balance_match = re.search(r'(?:/balance|/budget|سرمایه|بالانس|بودجه)\s*([0-9\.]+)', text)
+                                if balance_match:
+                                    new_val = float(balance_match.group(1))
+                                    res = evaluator.set_balance(new_val)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                # تغییر اهرم
+                                elif re.search(r'(?:/leverage|اهرم|لوریج)\s*([0-9]+)', text):
+                                    lev_match = re.search(r'(?:/leverage|اهرم|لوریج)\s*([0-9]+)', text)
+                                    new_lev = int(lev_match.group(1))
+                                    res = evaluator.set_leverage(new_lev)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                # تغییر حجم لات
+                                elif re.search(r'(?:/lot|لات|حجم)\s*([0-9\.]+)', text):
+                                    lot_match = re.search(r'(?:/lot|لات|حجم)\s*([0-9\.]+)', text)
+                                    new_lot = float(lot_match.group(1))
+                                    res = evaluator.set_lot_size(new_lot)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                # تغییر درصد کارمزد
+                                elif re.search(r'(?:/fee|کارمزد)\s*([0-9\.]+)', text):
+                                    fee_match = re.search(r'(?:/fee|کارمزد)\s*([0-9\.]+)', text)
+                                    new_fee = float(fee_match.group(1))
+                                    res = evaluator.set_fee_rate(new_fee)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                # سوییچ پلتفرم
+                                elif text.startswith("/mode") or text.startswith("حالت"):
+                                    parts = text.split()
+                                    if len(parts) >= 2:
+                                        m_name = parts[1]
+                                        res = evaluator.set_mode(m_name)
+                                        cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
+                                    else:
+                                        cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, evaluator.get_settings_summary_text(), reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                elif text in ["/settings", "تنظیمات"]:
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, evaluator.get_settings_summary_text(), reply_markup=get_settings_menu_keyboard(cur_mode))
 
                                 elif text in ["/stats", "آمار", "کارنامه"]:
                                     stats = evaluator.get_stats_summary()
@@ -224,8 +431,7 @@ async def bot_command_listener():
                                 elif text in ["/start", "/help", "منو", "راهنما"]:
                                     guide = (
                                         f"👋 <b>کنترل پنل هوشمند رصد سیگنال طلا</b>\n\n"
-                                        f"💵 <b>سرمایه تنظیمی فعلی شما:</b> <code>${evaluator.trade_budget:.2f}</code>\n\n"
-                                        f"برای مدیریت از دکمه‌های زیر استفاده کنید:"
+                                        f"{evaluator.get_settings_summary_text()}"
                                     )
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, guide, reply_markup=get_main_menu_keyboard())
 
@@ -378,18 +584,21 @@ async def main():
     initial_gold_price = gold_tracker.get_price()
     price_str = f"${initial_gold_price:.2f}" if initial_gold_price else "در حال بارگذاری..."
 
-    # اعلان راه‌اندازی موفق به کاربر
+    s = evaluator.settings
+    mode_str = "Ourbit فیوچرز" if s.get("mode") == "OURBIT_FUTURES" else "Forex MT5"
+
     startup_msg = (
         "🚀 <b>ربات هوشمند رصد سیگنال طلا فعال شد!</b>\n\n"
         f"📡 <b>کانال هدف:</b> <code>@{TARGET_CHANNEL}</code>\n"
         f"💵 <b>قیمت لحظه‌ای طلا (XAUUSD):</b> <code>{price_str}</code>\n"
-        f"💰 <b>سرمایه انتخابی شما در هر معامله:</b> <code>${evaluator.trade_budget:.2f}</code>\n\n"
-        "✨ <b>سیستم بدون نیاز به اکانت و به‌صورت مستقل در حال رصد ۲۴ ساعته است.</b>\n"
+        f"📊 <b>پلتفرم معاملاتی:</b> <code>{mode_str}</code>\n"
+        f"💰 <b>سرمایه مارجین:</b> <code>${evaluator.trade_budget:.2f}</code> | ⚡️ <b>اهرم:</b> <code>{s.get('leverage', 100)}x</code>\n"
+        f"💸 <b>نرخ کارمزد صرافی:</b> <code>{s.get('fee_rate', 0.04)}%</code> ({s.get('order_type', 'MARKET')})\n\n"
+        "✨ <b>سیستم به صورت خودکار سود ناخالص، کارمزد صرافی و سود خالص را محاسبه می‌کند.</b>\n"
         "برای مدیریت از دکمه‌های زیر استفاده کنید:"
     )
     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, startup_msg, reply_markup=get_main_menu_keyboard())
 
-    # راه‌اندازی شنونده وب کانال تلگرام
     listener = WebChannelListener(channel_name=TARGET_CHANNEL, poll_interval=1.8)
     listener.on_new_message = handle_channel_message
     listener.on_edited_message = handle_channel_edited_message
