@@ -144,18 +144,22 @@ def parse_lordxau_message(text: str) -> Optional[ParsedResult]:
                     sl_pips = round(abs(sl_price - entry_price) * 10, 1)
 
         # استخراج و محاسبه تارگت‌ها (Take Profit)
-        # الگوی Tp60pip - 100pip یا TP: 60 - 100 pip
         tp1_price = None
         tp1_pips = None
         tp2_price = None
         tp2_pips = None
 
-        tp_match = re.search(r'(?i)\btp[_:\s-]*(\d+)\s*(?:pip|pips|پیپ)?(?:\s*[-/]\s*(\d+)\s*(?:pip|pips|پیپ)?)?', cleaned)
-        if tp_match:
-            val1 = float(tp_match.group(1))
-            val2 = float(tp_match.group(2)) if tp_match.group(2) else None
+        # بررسی وجود چند خط مجزای TP (مانند TP 4149 و خط بعد TP 4159) یا الگوی بازه‌ای (Tp60pip - 100pip)
+        tp_range_match = re.search(r'(?i)\btp[_:\s-]*(\d+)\s*(?:pip|pips|پیپ)?\s*[-/]\s*(\d+)\s*(?:pip|pips|پیپ)?', cleaned)
+        if tp_range_match:
+            val1 = float(tp_range_match.group(1))
+            val2 = float(tp_range_match.group(2))
+        else:
+            all_tp = re.findall(r'(?i)\btp[12]?[_:\s-]+([0-9\.]+)', cleaned)
+            val1 = float(all_tp[0]) if len(all_tp) >= 1 else None
+            val2 = float(all_tp[1]) if len(all_tp) >= 2 else None
 
-            # تارگت اول
+        if val1 is not None:
             if val1 > 1000:
                 tp1_price = val1
                 if entry_price > 0:
@@ -166,17 +170,16 @@ def parse_lordxau_message(text: str) -> Optional[ParsedResult]:
                 if entry_price > 0:
                     tp1_price = round(entry_price - tp1_dollars, 2) if direction_code == "SELL" else round(entry_price + tp1_dollars, 2)
 
-            # تارگت دوم (در صورت وجود)
-            if val2 is not None:
-                if val2 > 1000:
-                    tp2_price = val2
-                    if entry_price > 0:
-                        tp2_pips = round(abs(tp2_price - entry_price) * 10, 1)
-                else:
-                    tp2_pips = val2
-                    tp2_dollars = tp2_pips / 10.0
-                    if entry_price > 0:
-                        tp2_price = round(entry_price - tp2_dollars, 2) if direction_code == "SELL" else round(entry_price + tp2_dollars, 2)
+        if val2 is not None:
+            if val2 > 1000:
+                tp2_price = val2
+                if entry_price > 0:
+                    tp2_pips = round(abs(tp2_price - entry_price) * 10, 1)
+            else:
+                tp2_pips = val2
+                tp2_dollars = tp2_pips / 10.0
+                if entry_price > 0:
+                    tp2_price = round(entry_price - tp2_dollars, 2) if direction_code == "SELL" else round(entry_price + tp2_dollars, 2)
 
         # ساخت پیام خروجی با فرمت HTML
         lines = [

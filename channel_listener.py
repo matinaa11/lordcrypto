@@ -27,7 +27,9 @@ class TelegramWebParser(HTMLParser):
         if "data-post" in attrs_dict:
             self.current_id = attrs_dict["data-post"].split("/")[-1]
             
-        if tag == "div" and "tgme_widget_message_text" in attrs_dict.get("class", ""):
+        cls = attrs_dict.get("class", "")
+        # فقط متن اصلی پیام (js-message_text) را بردار و نقل‌قول ریپلای (js-message_reply_text) را فیلتر کن
+        if tag == "div" and "js-message_text" in cls and "js-message_reply_text" not in cls:
             self.in_text = True
             self.current_text = []
         elif self.in_text and tag == "br":
