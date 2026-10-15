@@ -7,15 +7,25 @@ from datetime import datetime, timezone, timedelta
 import aiohttp
 from dotenv import load_dotenv
 
-from parser import parse_lordxau_message
+from config import (
+    BOT_TOKEN, 
+    USER_CHAT_ID, 
+    load_channels, 
+    save_channels, 
+    add_channel, 
+    remove_channel, 
+    toggle_channel, 
+    get_active_channels
+)
+from parser import parse_channel_message, parse_lordxau_message
 from notifier import (
     send_telegram_alert, 
     answer_callback_query, 
     edit_message_reply_markup
 )
-from gold_tracker import gold_tracker
+from price_fetcher import price_fetcher, gold_tracker
 from evaluator import evaluator
-from channel_listener import WebChannelListener
+from channel_listener import MultiChannelListener, WebChannelListener
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,12 +33,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("LordGoldBot")
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-USER_CHAT_ID = os.getenv("USER_CHAT_ID")
-TARGET_CHANNEL = os.getenv("TARGET_CHANNEL", "lordxau").strip()
 
 def check_env():
     missing = []
@@ -39,6 +43,9 @@ def check_env():
         logger.error(f"❌ متغیرهای ضروری تنظیم نشده‌اند: {', '.join(missing)}")
         logger.error("تنها به BOT_TOKEN و USER_CHAT_ID نیاز دارید.")
         sys.exit(1)
+
+# نمونه شنودگر چند کاناله سراسری
+multi_listener = MultiChannelListener()
 
 # ==================== دکمه‌های شیشه‌ای تلگرام ====================
 
@@ -64,6 +71,9 @@ def get_settings_menu_keyboard(mode: str = "OURBIT_FUTURES"):
                 {"text": mode_btn_text, "callback_data": "settings_toggle_mode"}
             ],
             [
+                {"text": "📡 مدیریت کانال‌های رصد", "callback_data": "channels_menu"}
+            ],
+            [
                 {"text": "💰 تغییر سرمایه ($)", "callback_data": "settings_menu_balance"},
                 {"text": "⚡ تغییر اهرم (Leverage)", "callback_data": "settings_menu_leverage"}
             ],
@@ -76,6 +86,25 @@ def get_settings_menu_keyboard(mode: str = "OURBIT_FUTURES"):
             ]
         ]
     }
+
+def get_channels_menu_keyboard():
+    channels = load_channels()
+    buttons = []
+    for c in channels:
+        status_icon = "🟢" if c.get("enabled", True) else "🔴"
+        title = c.get("title", f"@{c['username']}")
+        u = c["username"]
+        buttons.append([
+            {"text": f"{status_icon} {title}", "callback_data": f"toggle_ch_{u}"},
+            {"text": "🗑 حذف", "callback_data": f"remove_ch_{u}"}
+        ])
+    buttons.append([
+        {"text": "➕ راهنمای افزودن کانال جدید", "callback_data": "add_channel_prompt"}
+    ])
+    buttons.append([
+        {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+    ])
+    return {"inline_keyboard": buttons}
 
 def get_balance_selection_keyboard():
     return {
@@ -118,12 +147,13 @@ def get_lot_selection_keyboard():
     return {
         "inline_keyboard": [
             [
-                {"text": "0.01 لات", "callback_data": "set_lot_0.01"},
-                {"text": "0.02 لات", "callback_data": "set_lot_0.02"}
+                {"text": "0.01 Lot", "callback_data": "set_lot_0.01"},
+                {"text": "0.02 Lot", "callback_data": "set_lot_0.02"},
+                {"text": "0.05 Lot", "callback_data": "set_lot_0.05"}
             ],
             [
-                {"text": "0.05 لات", "callback_data": "set_lot_0.05"},
-                {"text": "0.10 لات", "callback_data": "set_lot_0.10"}
+                {"text": "0.10 Lot", "callback_data": "set_lot_0.10"},
+                {"text": "0.20 Lot", "callback_data": "set_lot_0.20"}
             ],
             [
                 {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
@@ -135,13 +165,12 @@ def get_fee_selection_keyboard():
     return {
         "inline_keyboard": [
             [
-                {"text": "0.04% (Market / Taker Ourbit)", "callback_data": "set_fee_market"}
+                {"text": "0.04% (مارکت / Taker)", "callback_data": "set_fee_market"},
+                {"text": "0.02% (لیمیت / Maker)", "callback_data": "set_fee_limit"}
             ],
             [
-                {"text": "0.02% (Limit / Maker Ourbit)", "callback_data": "set_fee_limit"}
-            ],
-            [
-                {"text": "0% (بدون کارمزد / فارکس خام)", "callback_data": "set_fee_zero"}
+                {"text": "0.06% (استاندارد)", "callback_data": "set_fee_0.06"},
+                {"text": "0.00% (بدون کارمزد)", "callback_data": "set_fee_0.00"}
             ],
             [
                 {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
@@ -153,26 +182,16 @@ def get_signal_action_keyboard(sig_num: int):
     return {
         "inline_keyboard": [
             [
-                {"text": "✅ وارد این معامله شدم", "callback_data": f"enter_trade_{sig_num}"},
-                {"text": "⏭ این معامله را نگرفتم", "callback_data": f"skip_trade_{sig_num}"}
+                {"text": "✅ من هم وارد این معامله شدم", "callback_data": f"enter_sig_{sig_num}"},
+                {"text": "❌ رد کردن این معامله", "callback_data": f"skip_sig_{sig_num}"}
             ]
         ]
     }
 
-def get_signal_confirmed_keyboard(sig_num: int, entered: bool):
-    text = f"✅ معامله #{sig_num} در کارنامه شما ثبت شد" if entered else f"⏭ معامله #{sig_num} رد شد"
-    return {
-        "inline_keyboard": [
-            [
-                {"text": text, "callback_data": "noop"}
-            ]
-        ]
-    }
-
-# ==================== پردازش دستورات و کلیک‌های کاربر ====================
+# ==================== دریافت دستورات و دکمه‌ها ====================
 
 async def bot_command_listener():
-    logger.info("🤖 شنونده دستورات تلگرامی کاربر فعال شد...")
+    logger.info("🤖 شنودگر دستورات و دکمه‌های تلگرام فعال شد...")
     offset = 0
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
 
@@ -192,7 +211,6 @@ async def bot_command_listener():
                                 cb_id = callback["id"]
                                 cb_data = callback.get("data", "")
                                 sender_id = str(callback.get("from", {}).get("id"))
-                                msg_id = callback.get("message", {}).get("message_id")
 
                                 if sender_id != str(USER_CHAT_ID):
                                     await answer_callback_query(BOT_TOKEN, cb_id, "دسترسی غیرمجاز")
@@ -203,7 +221,7 @@ async def bot_command_listener():
                                     continue
 
                                 elif cb_data == "check_price":
-                                    price = gold_tracker.get_price()
+                                    price = price_fetcher.get_price("XAUUSD")
                                     p_str = f"${price:.2f}" if price else "در حال دریافت..."
                                     await answer_callback_query(BOT_TOKEN, cb_id, f"قیمت طلا: {p_str}", show_alert=True)
 
@@ -212,7 +230,7 @@ async def bot_command_listener():
                                     stats = evaluator.get_stats_summary()
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"📊 <b>کارنامه کلی سیگنال‌ها:</b>\n\n{stats}", 
+                                        stats, 
                                         reply_markup=get_main_menu_keyboard()
                                     )
 
@@ -233,7 +251,40 @@ async def bot_command_listener():
                                         reply_markup=get_main_menu_keyboard()
                                     )
 
-                                # ── منوی تنظیمات معامله و کارمزد ──
+                                # ── مدیریت کانال‌ها ──
+                                elif cb_data == "channels_menu":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    msg = "📡 <b>مدیریت کانال‌های تحت رصد:</b>\nبرای فعال/غیرفعال کردن هر کانال روی آن کلیک کنید:"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, msg, reply_markup=get_channels_menu_keyboard())
+
+                                elif cb_data.startswith("toggle_ch_"):
+                                    u = cb_data.replace("toggle_ch_", "")
+                                    ok, msg, state = toggle_channel(u)
+                                    multi_listener.sync_channels(load_channels())
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"وضعیت @{u} تغییر یافت")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, msg, reply_markup=get_channels_menu_keyboard())
+
+                                elif cb_data.startswith("remove_ch_"):
+                                    u = cb_data.replace("remove_ch_", "")
+                                    ok, msg = remove_channel(u)
+                                    multi_listener.sync_channels(load_channels())
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"کانال @{u} حذف شد")
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, msg, reply_markup=get_channels_menu_keyboard())
+
+                                elif cb_data == "add_channel_prompt":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    prompt_msg = (
+                                        "➕ <b>افزودن کانال جدید برای رصد همزمان:</b>\n\n"
+                                        "کافیست دستور زیر را به همراه یوزرنیم یا لینک کانال ارسال کنید:\n"
+                                        "<code>/add_channel @Username</code>\n"
+                                        "یا\n"
+                                        "<code>/add_channel https://t.me/Username</code>\n\n"
+                                        "همچنین برای حذف کانال:\n"
+                                        "<code>/remove_channel @Username</code>"
+                                    )
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, prompt_msg, reply_markup=get_channels_menu_keyboard())
+
+                                # ── تنظیمات سرمایه و کارمزد ──
                                 elif cb_data == "settings_main":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
@@ -255,30 +306,31 @@ async def bot_command_listener():
                                         reply_markup=get_settings_menu_keyboard(new_mode)
                                     )
 
-                                elif cb_data == "settings_menu_balance" or cb_data == "menu_budget":
+                                elif cb_data in ["settings_menu_balance", "menu_budget"]:
                                     await answer_callback_query(BOT_TOKEN, cb_id)
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"💰 <b>سرمایه مارجین فعلی: ${evaluator.trade_budget:.2f}</b>\n\nمبلغ دلخواه را انتخاب کنید یا دستور <code>/balance [عدد]</code> را بفرستید:",
+                                        f"💰 سرمایه اولیه مد نظر برای ورود به هر معامله را انتخاب کنید (فعلی: ${evaluator.trade_budget:.2f}):\nیا با دستور `/balance 25` عدد دلخواه وارد کنید.",
                                         reply_markup=get_balance_selection_keyboard()
                                     )
 
-                                elif cb_data.startswith("set_balance_") or cb_data.startswith("set_budget_"):
-                                    amount = float(cb_data.replace("set_balance_", "").replace("set_budget_", ""))
-                                    res = evaluator.set_balance(amount)
-                                    await answer_callback_query(BOT_TOKEN, cb_id, f"سرمایه به ${amount:.2f} تغییر یافت")
+                                elif cb_data.startswith("set_balance_"):
+                                    val = float(cb_data.replace("set_balance_", ""))
+                                    res = evaluator.set_balance(val)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"سرمایه به {val}$ تنظیم شد")
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}",
                                         reply_markup=get_settings_menu_keyboard(cur_mode)
                                     )
 
                                 elif cb_data == "settings_menu_leverage":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_lev = evaluator.settings.get("leverage", 100)
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"⚡️ <b>اهرم فعلی فیوچرز: {evaluator.settings.get('leverage', 100)}x</b>\n\nضریب اهرم جدید را انتخاب کنید یا دستور <code>/leverage [عدد]</code> را بفرستید:",
+                                        f"⚡ اهرم مورد نظر برای فیوچرز Ourbit را انتخاب کنید (فعلی: {cur_lev}x):\nیا با دستور `/leverage 75` اهرم دلخواه وارد کنید.",
                                         reply_markup=get_leverage_selection_keyboard()
                                     )
 
@@ -289,91 +341,106 @@ async def bot_command_listener():
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}",
                                         reply_markup=get_settings_menu_keyboard(cur_mode)
                                     )
 
                                 elif cb_data == "settings_menu_lot":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_lot = evaluator.settings.get("lot_size", 0.01)
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"📊 <b>حجم فعلی معامله فارکس: {evaluator.settings.get('lot_size', 0.01)} Lot</b>\n\nحجم جدید را انتخاب کنید یا دستور <code>/lot [عدد]</code> را بفرستید:",
+                                        f"📊 حجم معامله به لات برای Forex MT5 را انتخاب کنید (فعلی: {cur_lot} Lot):\nیا با دستور `/lot 0.03` حجم دلخواه وارد کنید.",
                                         reply_markup=get_lot_selection_keyboard()
                                     )
 
                                 elif cb_data.startswith("set_lot_"):
-                                    lot = float(cb_data.replace("set_lot_", ""))
-                                    res = evaluator.set_lot_size(lot)
-                                    await answer_callback_query(BOT_TOKEN, cb_id, f"حجم به {lot} Lot تنظیم شد")
+                                    lot_val = float(cb_data.replace("set_lot_", ""))
+                                    res = evaluator.set_lot_size(lot_val)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"حجم به {lot_val} لات تنظیم شد")
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}",
                                         reply_markup=get_settings_menu_keyboard(cur_mode)
                                     )
 
                                 elif cb_data == "settings_menu_fee":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_fee = evaluator.settings.get("fee_rate", 0.04)
                                     await send_telegram_alert(
                                         BOT_TOKEN, USER_CHAT_ID, 
-                                        f"💸 <b>کارمزد فعلی: {evaluator.settings.get('fee_rate', 0.04)}% ({evaluator.settings.get('order_type', 'MARKET')})</b>\n\nنرخ کارمزد صرافی را انتخاب کنید یا دستور <code>/fee [درصد]</code> را بفرستید:",
+                                        f"💸 نرخ کارمزد صرافی در هر طرف معامله (فعلی: {cur_fee}%):\nیا با دستور `/fee 0.05` درصد دلخواه وارد کنید.",
                                         reply_markup=get_fee_selection_keyboard()
                                     )
 
                                 elif cb_data == "set_fee_market":
                                     res = evaluator.set_order_type("MARKET")
-                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد 0.04% مارکت تنظیم شد")
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد مارکت 0.04% فعال شد")
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
 
                                 elif cb_data == "set_fee_limit":
                                     res = evaluator.set_order_type("LIMIT")
-                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد 0.02% لیمیت تنظیم شد")
+                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد لیمیت 0.02% فعال شد")
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
 
-                                elif cb_data == "set_fee_zero":
-                                    res = evaluator.set_order_type("ZERO")
-                                    await answer_callback_query(BOT_TOKEN, cb_id, "کارمزد صفر تنظیم شد")
+                                elif cb_data.startswith("set_fee_"):
+                                    f_val = float(cb_data.replace("set_fee_", ""))
+                                    res = evaluator.set_fee_rate(f_val)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"کارمزد به {f_val}% تنظیم شد")
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
 
-                                elif cb_data.startswith("enter_trade_"):
-                                    sig_n = int(cb_data.replace("enter_trade_", ""))
-                                    evaluator.mark_user_participation(sig_n, True)
-                                    await answer_callback_query(BOT_TOKEN, cb_id, "ورود شما ثبت شد ✅")
-                                    if msg_id:
-                                        await edit_message_reply_markup(
-                                            BOT_TOKEN, USER_CHAT_ID, msg_id, 
-                                            get_signal_confirmed_keyboard(sig_n, True)
-                                        )
+                                elif cb_data.startswith("enter_sig_"):
+                                    sig_num = int(cb_data.split("_")[-1])
+                                    res = evaluator.mark_user_participation(sig_num, True)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, res)
 
-                                elif cb_data.startswith("skip_trade_"):
-                                    sig_n = int(cb_data.replace("skip_trade_", ""))
-                                    evaluator.mark_user_participation(sig_n, False)
-                                    await answer_callback_query(BOT_TOKEN, cb_id, "معامله رد شد ⏭")
-                                    if msg_id:
-                                        await edit_message_reply_markup(
-                                            BOT_TOKEN, USER_CHAT_ID, msg_id, 
-                                            get_signal_confirmed_keyboard(sig_n, False)
-                                        )
+                                elif cb_data.startswith("skip_sig_"):
+                                    sig_num = int(cb_data.split("_")[-1])
+                                    res = evaluator.mark_user_participation(sig_num, False)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, res)
 
-                            # ۲. دستورات متنی
-                            msg = update.get("message")
-                            if msg:
-                                sender_id = str(msg.get("chat", {}).get("id"))
+                            # ۲. دریافت پیام‌های متنی کاربر
+                            message = update.get("message")
+                            if message:
+                                sender_id = str(message.get("from", {}).get("id"))
+                                text = message.get("text", "").strip()
+
                                 if sender_id != str(USER_CHAT_ID):
                                     continue
 
-                                text = msg.get("text", "").strip()
-                                if not text:
-                                    continue
+                                # دستورات مدیریت کانال‌ها
+                                if text.startswith("/add_channel"):
+                                    parts = text.split(maxsplit=1)
+                                    if len(parts) >= 2:
+                                        ok, res = add_channel(parts[1])
+                                        if ok:
+                                            multi_listener.sync_channels(load_channels())
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, res, reply_markup=get_channels_menu_keyboard())
+                                    else:
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, "❌ لطفاً نام کاربری یا لینک کانال را وارد کنید:\nمثال: <code>/add_channel @lordcryptovip</code>")
 
-                                # تغییر سرمایه / بالانس
-                                balance_match = re.search(r'(?:/balance|/budget|سرمایه|بالانس|بودجه)\s*([0-9\.]+)', text)
-                                if balance_match:
-                                    new_val = float(balance_match.group(1))
-                                    res = evaluator.set_balance(new_val)
+                                elif text.startswith("/remove_channel"):
+                                    parts = text.split(maxsplit=1)
+                                    if len(parts) >= 2:
+                                        ok, res = remove_channel(parts[1])
+                                        if ok:
+                                            multi_listener.sync_channels(load_channels())
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, res, reply_markup=get_channels_menu_keyboard())
+                                    else:
+                                        await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, "❌ لطفاً نام کاربری کانال را وارد کنید:\nمثال: <code>/remove_channel @lordcryptovip</code>")
+
+                                elif text in ["/channels", "کانال‌ها", "کانال ها"]:
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, "📡 <b>مدیریت کانال‌های تحت رصد:</b>", reply_markup=get_channels_menu_keyboard())
+
+                                # تغییر سرمایه
+                                elif re.search(r'(?:/balance|/budget|سرمایه|بودجه)\s*([0-9\.]+)', text):
+                                    bud_match = re.search(r'(?:/balance|/budget|سرمایه|بودجه)\s*([0-9\.]+)', text)
+                                    new_b = float(bud_match.group(1))
+                                    res = evaluator.set_balance(new_b)
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
@@ -423,7 +490,7 @@ async def bot_command_listener():
 
                                 elif text in ["/stats", "آمار", "کارنامه"]:
                                     stats = evaluator.get_stats_summary()
-                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"📊 <b>کارنامه معاملات:</b>\n\n{stats}", reply_markup=get_main_menu_keyboard())
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, stats, reply_markup=get_main_menu_keyboard())
 
                                 elif text in ["/today", "گزارش امروز", "امروز"]:
                                     digest = evaluator.get_daily_summary()
@@ -431,7 +498,7 @@ async def bot_command_listener():
 
                                 elif text in ["/start", "/help", "منو", "راهنما"]:
                                     guide = (
-                                        f"👋 <b>کنترل پنل هوشمند رصد سیگنال طلا</b>\n\n"
+                                        f"👋 <b>کنترل پنل هوشمند رصد سیگنال طلا و کریپتو</b>\n\n"
                                         f"{evaluator.get_settings_summary_text()}"
                                     )
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, guide, reply_markup=get_main_menu_keyboard())
@@ -464,127 +531,124 @@ async def daily_digest_scheduler():
 
         await asyncio.sleep(30.0)
 
-# ==================== مانیتورینگ زنده موقعیت معامله ====================
+# ==================== مانیتورینگ زنده موقعیت معامله (همه کانال‌ها) ====================
 
 async def monitor_position_live_loop():
-    logger.info("⚡️ حلقه بررسی ثانیه‌ای موقعیت سیگنال فعال شد.")
+    logger.info("⚡️ حلقه بررسی ثانیه‌ای موقعیت سیگنال‌ها (همه کانال‌ها) فعال شد.")
     while True:
         try:
-            price = gold_tracker.get_price()
-            if price:
-                status_alert = evaluator.check_live_status_change(price)
-                if status_alert:
-                    logger.info("🔔 پیام وضعیت / نتیجه سیگنال صادر شد.")
-                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, status_alert, reply_markup=get_main_menu_keyboard())
+            alerts = evaluator.check_live_status_change(price_fetcher.get_price)
+            for alert in alerts:
+                logger.info("🔔 پیام وضعیت / نتیجه سیگنال صادر شد.")
+                await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, alert, reply_markup=get_main_menu_keyboard())
         except Exception as e:
             logger.error(f"خطا در حلقه بررسی موقعیت: {e}")
 
         await asyncio.sleep(2.0)
 
-# ==================== پردازش پیام‌های دریافتی از کانال ====================
+# ==================== پردازش پیام‌های دریافتی از کانال‌ها (کاملاً ایزوله) ====================
 
-async def handle_channel_message(msg_id: int, raw_text: str):
-    parsed = parse_lordxau_message(raw_text)
+async def handle_channel_message(msg_id: int, raw_text: str, channel_name: str = "lordxau", channel_title: str = "LORD XAU"):
+    parsed = parse_channel_message(raw_text, channel_title=channel_title, channel_name=channel_name)
     if not parsed:
-        logger.info("ℹ️ پیام نویز یا نامربوط بود و فیلتر شد.")
+        logger.info(f"ℹ️ پیام نویز یا نامربوط از @{channel_name} فیلتر شد.")
         return
 
     cat, title, formatted_html, should_alert = parsed
 
-    # جلوگیری از ارسال دستورات کنترلی (ریسک‌فری / کلوز / استاپ) وقتی سیگنال فعالی وجود ندارد
-    control_categories = ["ACTION_RISKFREE", "ACTION_CLOSE", "SIGNAL_STOP", "ACTION_STOP_HIT"]
-    if cat in control_categories and not evaluator.has_active_trade():
-        logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+    # جلوگیری از ارسال دستورات کنترلی در صورت عدم وجود معامله فعال در این کانال
+    control_categories = ["ACTION_RISKFREE", "ACTION_CLOSE", "SIGNAL_STOP", "ACTION_STOP_HIT", "ACTION_TARGET_HIT"]
+    if cat in control_categories and not evaluator.has_active_trade(source_channel=channel_name):
+        logger.info(f"ℹ️ دستور کنترلی از @{channel_name} نادیده گرفته شد (معامله فعالی در این کانال وجود ندارد).")
         return
 
-    current_price = gold_tracker.get_price()
+    symbol = getattr(parsed, "symbol", "XAUUSD")
+    current_price = price_fetcher.get_price(symbol)
     extra_analysis = ""
     outcome_report = None
     reply_markup = None
 
     if cat == "SIGNAL_ENTRY":
-        direction = getattr(parsed, "direction", None)
-        if not direction:
-            direction = "BUY" if ("buy" in raw_text.lower() or "بای" in raw_text.lower()) else "SELL"
-        
-        enter_raw = getattr(parsed, "entry_raw", None)
-        if not enter_raw:
-            enter_match = re.search(r'(?:enter|ورود)\s*[:=]?\s*([0-9/\.\-]+)', raw_text.lower())
-            enter_raw = enter_match.group(1) if enter_match else ""
-        
-        sig_num, analysis = evaluator.register_entry(direction, enter_raw, current_price)
+        dir_clean = getattr(parsed, "direction", "BUY")
+        enter_raw = getattr(parsed, "entry_raw", "")
 
-        # اگر در همان پیام سیگنال، استاپ‌لاس هم مشخص شده باشد، بلافاصله آن را متصل کن
+        # ثبت معامله منحصراً برای همین کانال (ایزولاسیون کامل)
+        sig_num, analysis = evaluator.register_entry(
+            direction=dir_clean,
+            entry_raw=enter_raw,
+            current_price=current_price,
+            source_channel=channel_name,
+            channel_title=channel_title,
+            symbol=symbol
+        )
+
         parsed_sl = getattr(parsed, "stop_loss", None)
         if parsed_sl:
-            sl_analysis, sl_outcome = evaluator.register_stop(str(parsed_sl), current_price)
+            sl_analysis, sl_outcome = evaluator.register_stop(str(parsed_sl), current_price, source_channel=channel_name)
             if sl_analysis:
                 analysis = sl_analysis
             if sl_outcome:
                 outcome_report = sl_outcome
 
-        formatted_html = formatted_html.replace("⚡️ <b>سیگنال ورود جدید طلا (XAUUSD)</b> ⚡️", f"⚡️ <b>سیگنال شماره #{sig_num} طلا (XAUUSD)</b> ⚡️")
-        extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل آنی موقعیت بازار:</b>\n{analysis}"
+        price_note = f"${current_price:.2f}" if current_price else "در حال بارگذاری..."
+        extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل وضعیت ورود:</b>\n{analysis}\n💵 <i>قیمت لحظه‌ای {symbol}: {price_note}</i>"
         reply_markup = get_signal_action_keyboard(sig_num)
 
     elif cat == "SIGNAL_STOP":
         parsed_sl = getattr(parsed, "stop_loss", None)
-        if parsed_sl:
-            stop_val = str(parsed_sl)
-        else:
+        stop_val = str(parsed_sl) if parsed_sl else ""
+        if not stop_val:
             stop_match = re.search(r'(?:stop|استاپ|sl)[_:\s-]*([0-9\.]+)', raw_text.lower())
             stop_val = stop_match.group(1) if stop_match else ""
 
         if stop_val:
-            analysis, sl_outcome = evaluator.register_stop(stop_val, current_price)
-            extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>وضعیت حد ضرر نسبت به بازار:</b>\n{analysis}"
+            analysis, sl_outcome = evaluator.register_stop(stop_val, current_price, source_channel=channel_name)
+            extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>وضعیت حد ضرر:</b>\n{analysis}"
             if sl_outcome:
                 outcome_report = sl_outcome
 
     elif cat == "ACTION_RISKFREE":
-        success, rf_msg = evaluator.register_risk_free()
+        success, rf_msg = evaluator.register_risk_free(source_channel=channel_name)
         if not success:
-            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+            logger.info(f"ℹ️ دستور ریسک‌فری از @{channel_name} نادیده گرفته شد (معامله فعالی نیست).")
             return
-        extra_analysis = f"\n\n{rf_msg}\n💵 <i>قیمت فعلی طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{rf_msg}"
+        extra_analysis = f"\n\n{rf_msg}"
 
     elif cat == "ACTION_CLOSE":
-        success, close_notice, close_outcome = evaluator.register_manual_close(current_price)
+        success, close_notice, close_outcome = evaluator.register_manual_close(current_price, source_channel=channel_name)
         if not success:
-            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+            logger.info(f"ℹ️ دستور کلوز از @{channel_name} نادیده گرفته شد (معامله فعالی نیست).")
             return
-        extra_analysis = f"\n\n{close_notice}\n💵 <i>قیمت لحظه‌ای طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{close_notice}"
+        extra_analysis = f"\n\n{close_notice}"
         if close_outcome:
             outcome_report = close_outcome
 
     elif cat == "ACTION_STOP_HIT":
-        outcome_report = evaluator.register_stop_hit_message(current_price)
+        outcome_report = evaluator.register_stop_hit_message(current_price, source_channel=channel_name)
 
-    elif cat == "MANAGEMENT_INFO" and any(k in raw_text for k in ["برگشت ورود", "فری شد", "فری خورد"]):
-        outcome_report = evaluator.register_break_even(current_price)
-
-    elif current_price:
-        extra_analysis = f"\n\n💵 <b>قیمت لحظه‌ای طلا:</b> <code>${current_price:.2f}</code>"
+    elif cat == "ACTION_TARGET_HIT":
+        extra_analysis = f"\n\n🎯 <i>ادمین کانال اعلام کرد تارگت سود محقق گردید.</i>"
 
     final_message = formatted_html + extra_analysis
-    logger.info(f"🎯 ارسال سیگنال به کاربر: [{cat}]")
+    logger.info(f"🎯 ارسال سیگنال به کاربر از کانال {channel_title}: [{cat}]")
     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, final_message, reply_markup=reply_markup)
 
     if outcome_report:
-        logger.info("🏁 ارسال کارنامه نتیجه نهایی سیگنال به کاربر...")
+        logger.info(f"🏁 ارسال کارنامه نتیجه نهایی سیگنال ({channel_title}) به کاربر...")
         await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, outcome_report, reply_markup=get_main_menu_keyboard())
 
-async def handle_channel_edited_message(msg_id: int, raw_text: str):
-    parsed = parse_lordxau_message(raw_text)
+async def handle_channel_edited_message(msg_id: int, raw_text: str, channel_name: str = "lordxau", channel_title: str = "LORD XAU"):
+    parsed = parse_channel_message(raw_text, channel_title=channel_title, channel_name=channel_name)
     if parsed:
         cat, title, formatted_html, should_alert = parsed
         control_categories = ["ACTION_RISKFREE", "ACTION_CLOSE", "SIGNAL_STOP", "ACTION_STOP_HIT"]
-        if cat in control_categories and not evaluator.has_active_trade():
-            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+        if cat in control_categories and not evaluator.has_active_trade(source_channel=channel_name):
+            logger.info(f"ℹ️ دستور کنترلی ادیت از @{channel_name} نادیده گرفته شد.")
             return
 
-        current_price = gold_tracker.get_price()
-        price_note = f"\n\n💵 <b>قیمت فعلی:</b> <code>${current_price:.2f}</code>" if current_price else ""
+        symbol = getattr(parsed, "symbol", "XAUUSD")
+        current_price = price_fetcher.get_price(symbol)
+        price_note = f"\n\n💵 <b>قیمت فعلی {symbol}:</b> <code>${current_price:.2f}</code>" if current_price else ""
         edit_notice = f"⚠️ <b>(پیام ویرایش شد)</b>\n\n" + formatted_html + price_note
         await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, edit_notice)
 
@@ -594,35 +658,37 @@ async def main():
     check_env()
 
     # استارت تسک‌های موازی
-    asyncio.create_task(gold_tracker.run_loop())
+    asyncio.create_task(price_fetcher.run_loop())
     asyncio.create_task(monitor_position_live_loop())
     asyncio.create_task(bot_command_listener())
     asyncio.create_task(daily_digest_scheduler())
 
     await asyncio.sleep(2.0)
-    initial_gold_price = gold_tracker.get_price()
+    initial_gold_price = price_fetcher.get_price("XAUUSD")
     price_str = f"${initial_gold_price:.2f}" if initial_gold_price else "در حال بارگذاری..."
 
     s = evaluator.settings
     mode_str = "Ourbit فیوچرز" if s.get("mode") == "OURBIT_FUTURES" else "Forex MT5"
 
+    active_chs = get_active_channels()
+    ch_names_str = "\n".join([f"• <b>{c.get('title', c['username'])}</b> (<code>@{c['username']}</code>)" for c in active_chs])
+
     startup_msg = (
-        "🚀 <b>ربات هوشمند رصد سیگنال طلا فعال شد!</b>\n\n"
-        f"📡 <b>کانال هدف:</b> <code>@{TARGET_CHANNEL}</code>\n"
+        "🚀 <b>ربات هوشمند رصد چندکاناله طلا و کریپتو فعال شد!</b>\n\n"
+        f"📡 <b>کانال‌های فعال تحت رصد:</b>\n{ch_names_str}\n\n"
         f"💵 <b>قیمت لحظه‌ای طلا (XAUUSD):</b> <code>{price_str}</code>\n"
         f"📊 <b>پلتفرم معاملاتی:</b> <code>{mode_str}</code>\n"
         f"💰 <b>سرمایه مارجین:</b> <code>${evaluator.trade_budget:.2f}</code> | ⚡️ <b>اهرم:</b> <code>{s.get('leverage', 100)}x</code>\n"
         f"💸 <b>نرخ کارمزد صرافی:</b> <code>{s.get('fee_rate', 0.04)}%</code> ({s.get('order_type', 'MARKET')})\n\n"
-        "✨ <b>سیستم به صورت خودکار سود ناخالص، کارمزد صرافی و سود خالص را محاسبه می‌کند.</b>\n"
+        "✨ <b>معاملات هر کانال به صورت کاملاً ایزوله رصد و کارنامه آن‌ها تفکیک خواهد شد.</b>\n"
         "برای مدیریت از دکمه‌های زیر استفاده کنید:"
     )
     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, startup_msg, reply_markup=get_main_menu_keyboard())
 
-    listener = WebChannelListener(channel_name=TARGET_CHANNEL, poll_interval=1.8)
-    listener.on_new_message = handle_channel_message
-    listener.on_edited_message = handle_channel_edited_message
+    multi_listener.on_new_message = handle_channel_message
+    multi_listener.on_edited_message = handle_channel_edited_message
 
-    await listener.start()
+    await multi_listener.start()
 
 if __name__ == "__main__":
     try:

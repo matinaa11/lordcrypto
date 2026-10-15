@@ -2,7 +2,7 @@ import logging
 import time
 import json
 import os
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 
 logger = logging.getLogger("Evaluator")
 
@@ -49,8 +49,28 @@ class SignalEvaluator:
             self.settings["balance"] = default_budget
             
         self.trade_history: List[Dict[str, Any]] = self._load_history()
-        self.active_signal: Optional[Dict[str, Any]] = self._load_active_signal()
+        # دیکشنری معاملات باز به تفکیک کانال: {channel_name: signal_dict}
+        self.active_signals: Dict[str, Dict[str, Any]] = self._load_active_signals()
         self.signal_counter: int = self._determine_counter()
+
+    # ════════════════════ سازگاری با کدهای تک‌کاناله قبلی ════════════════════
+    @property
+    def active_signal(self) -> Optional[Dict[str, Any]]:
+        if "lordxau" in self.active_signals and not self.active_signals["lordxau"].get("is_closed"):
+            return self.active_signals["lordxau"]
+        for sig in self.active_signals.values():
+            if sig and not sig.get("is_closed"):
+                return sig
+        return None
+
+    @active_signal.setter
+    def active_signal(self, val: Optional[Dict[str, Any]]):
+        if val is None:
+            pass
+        else:
+            ch = val.get("source_channel", "lordxau").lower().replace("@", "").strip()
+            self.active_signals[ch] = val
+            self._save_active_signals()
 
     # ════════════════════ مدیریت تنظیمات سرمایه و کارمزد ════════════════════
 
@@ -81,9 +101,10 @@ class SignalEvaluator:
             return "❌ مبلغ سرمایه باید بزرگتر از صفر باشد."
         self.settings["balance"] = round(new_balance, 2)
         self._save_settings()
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            self.active_signal["settings"]["balance"] = self.settings["balance"]
-            self._save_active_signal()
+        for sig in self.active_signals.values():
+            if sig and not sig.get("is_closed"):
+                sig["settings"]["balance"] = self.settings["balance"]
+        self._save_active_signals()
         return f"✅ سرمایه مارجین با موفقیت به <b>${self.settings['balance']:.2f}</b> تنظیم شد."
 
     def set_budget(self, new_budget: float) -> str:
@@ -98,174 +119,115 @@ class SignalEvaluator:
             self.settings["mode"] = "FOREX_MT5"
             label = "Forex MT5 (معاملات بر اساس حجم لات)"
         else:
-            return "❌ حالت نامعتبر است. انتخاب‌ها: <code>OURBIT_FUTURES</code> یا <code>FOREX_MT5</code>"
-        
+            return "❌ حالت نامعتبر است. فقط `OURBIT_FUTURES` یا `FOREX_MT5` مجاز هستند."
         self._save_settings()
-        return f"🔄 پلتفرم معاملاتی به <b>{label}</b> تغییر یافت."
+        return f"✅ پلتفرم معاملاتی به <b>{label}</b> تغییر یافت."
 
     def set_leverage(self, leverage: int) -> str:
         if leverage < 1 or leverage > 1000:
-            return "❌ اهرم باید بین 1 تا 1000 باشد."
+            return "❌ ضریب اهرم باید عددی بین ۱ تا ۱۰۰۰ باشد."
         self.settings["leverage"] = int(leverage)
         self._save_settings()
-        return f"⚡️ اهرم فیوچرز به <b>{self.settings['leverage']}x</b> تغییر یافت."
+        return f"✅ ضریب اهرم فیوچرز به <b>{leverage}x</b> تنظیم شد."
 
-    def set_lot_size(self, lot_size: float) -> str:
-        if lot_size <= 0 or lot_size > 50.0:
-            return "❌ حجم لات باید بین 0.01 تا 50.0 باشد."
-        self.settings["lot_size"] = round(lot_size, 3)
+    def set_lot_size(self, lot: float) -> str:
+        if lot <= 0 or lot > 100:
+            return "❌ حجم لات باید عددی مثبت باشد (مثلاً 0.01 یا 0.05)."
+        self.settings["lot_size"] = round(lot, 2)
         self._save_settings()
-        return f"📊 حجم لات فارکس به <b>{self.settings['lot_size']} Lot</b> تنظیم شد."
+        return f"✅ حجم معامله فارکس به <b>{lot:.2f} لات</b> تنظیم شد."
 
-    def set_fee_rate(self, fee_rate: float, order_type: Optional[str] = None) -> str:
-        if fee_rate < 0 or fee_rate > 5.0:
-            return "❌ درصد کارمزد باید بین 0 تا 5 درصد باشد."
-        self.settings["fee_rate"] = round(fee_rate, 4)
-        if order_type:
-            self.settings["order_type"] = order_type.upper()
+    def set_fee_rate(self, fee_percent: float) -> str:
+        if fee_percent < 0 or fee_percent > 5:
+            return "❌ درصد کارمزد نامعتبر است (معمولاً بین 0.02% تا 0.1%)."
+        self.settings["fee_rate"] = round(fee_percent, 4)
         self._save_settings()
-        return f"💸 نرخ کارمزد صرافی به <b>{self.settings['fee_rate']}%</b> تنظیم شد."
+        return f"✅ نرخ کارمزد صرافی به <b>{fee_percent:.2f}%</b> تنظیم شد."
 
     def set_order_type(self, order_type: str) -> str:
         ot = order_type.upper().strip()
-        if ot in ["MARKET", "TAKER", "مارکت"]:
+        if ot in ["MARKET", "مارکت", "TAKER"]:
             self.settings["order_type"] = "MARKET"
             self.settings["fee_rate"] = 0.04
-            msg = "⚡️ نوع سفارش به <b>MARKET (Taker)</b> تغییر یافت (کارمزد: <b>0.04%</b>)"
-        elif ot in ["LIMIT", "MAKER", "لیمیت"]:
+            msg = "مارکت (Taker) با کارمزد پیش‌فرض 0.04%"
+        elif ot in ["LIMIT", "لیمیت", "MAKER"]:
             self.settings["order_type"] = "LIMIT"
             self.settings["fee_rate"] = 0.02
-            msg = "🎯 نوع سفارش به <b>LIMIT (Maker)</b> تغییر یافت (کارمزد: <b>0.02%</b>)"
-        elif ot in ["ZERO", "NO_FEE", "صفر"]:
-            self.settings["order_type"] = "NO_FEE"
-            self.settings["fee_rate"] = 0.0
-            msg = "🆓 حالت <b>بدون کارمزد (0%)</b> فعال شد."
+            msg = "لیمیت (Maker) با کارمزد پیش‌فرض 0.02%"
         else:
-            return "❌ نوع سفارش نامعتبر است. (MARKET یا LIMIT)"
+            return "❌ نوع سفارش نامعتبر است (فقط MARKET یا LIMIT)."
         self._save_settings()
-        return msg
+        return f"✅ نوع سفارش به <b>{msg}</b> تنظیم شد."
 
     def get_settings_summary_text(self) -> str:
         s = self.settings
         mode = s.get("mode", "OURBIT_FUTURES")
-        balance = float(s.get("balance", 15.0))
-        lev = int(s.get("leverage", 100))
-        pos_val = balance * lev
-        lot = float(s.get("lot_size", 0.01))
-        fee = float(s.get("fee_rate", 0.04))
-        ot = s.get("order_type", "MARKET")
-        round_trip_fee = pos_val * (fee / 100.0) * 2.0
-
-        if mode == "OURBIT_FUTURES":
-            mode_badge = "🟢 صرافی Ourbit (فیوچرز)"
-            primary_info = (
-                f"💰 <b>سرمایه مارجین:</b> <code>${balance:.2f}</code>\n"
-                f"⚡️ <b>اهرم معاملاتی:</b> <code>{lev}x</code>\n"
-                f"📐 <b>ارزش کل پوزیشن:</b> <code>${pos_val:,.2f}</code>\n"
-                f"💸 <b>کارمزد رفت‌وبرگشت ({fee}% {ot}):</b> <code>${round_trip_fee:.2f}</code>"
-            )
-        else:
-            mode_badge = "🔵 Forex MT5 (متاتریدر)"
-            primary_info = (
-                f"📊 <b>حجم معامله:</b> <code>{lot} Lot</code> ({lot*100:.1f} انس طلا)\n"
-                f"💰 <b>سرمایه مبنا:</b> <code>${balance:.2f}</code>\n"
-                f"💸 <b>کارمزد/کمیسیون:</b> <code>{fee}%</code>"
-            )
-
+        mode_label = "🪙 Ourbit فیوچرز (مارجین + اهرم)" if mode == "OURBIT_FUTURES" else "📈 Forex MT5 (حجم لات)"
+        
         return (
-            f"⚙️ <b>کنترل پنل تنظیمات سرمایه و کارمزد</b>\n\n"
-            f"📊 <b>پلتفرم فعال:</b> {mode_badge}\n"
-            f"{primary_info}\n\n"
-            f"<i>برای اعمال تغییرات، از دکمه‌های زیر استفاده کنید:</i>"
+            f"⚙️ <b>تنظیمات فعلی مدیریت سرمایه و کارمزد:</b>\n\n"
+            f"🔄 <b>پلتفرم معاملاتی:</b> <code>{mode_label}</code>\n"
+            f"💰 <b>سرمایه مارجین:</b> <code>${float(s.get('balance', 15.0)):.2f}</code>\n"
+            f"⚡️ <b>اهرم فیوچرز (Ourbit):</b> <code>{int(s.get('leverage', 100))}x</code>\n"
+            f"📊 <b>حجم معامله (Forex MT5):</b> <code>{float(s.get('lot_size', 0.01))} Lot</code>\n"
+            f"💸 <b>نرخ کارمزد صرافی:</b> <code>{float(s.get('fee_rate', 0.04)):.2f}%</code> ({s.get('order_type', 'MARKET')})\n"
         )
 
-    # ════════════════════ فرمول‌های محاسبه دقیق مالی ════════════════════
+    # ════════════════════ محاسبات دقیق سود و کارمزد ════════════════════
 
-    def calculate_trade_metrics(self, entry_price: float, price_diff: float, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        محاسبه دقیق متریک‌های مالی شامل:
-        - ارزش کل پوزیشن (position_value)
-        - حجم معادل طلا به انس (gold_oz)
-        - کارمزد رفت‌وبرگشت (total_fee)
-        - سود/ضرر ناخالص (gross_pnl)
-        - سود/ضرر خالص (net_pnl)
-        - فاصله و قیمت لیکوئیدی (liq_distance_dollars, liq_price)
-        """
-        s = settings or self.settings
+    def calculate_trade_metrics(self, entry_price: float, price_diff: float, custom_settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        s = custom_settings or self.settings
         mode = s.get("mode", "OURBIT_FUTURES")
-        fee_rate = float(s.get("fee_rate", 0.04))
+        fee_rate = float(s.get("fee_rate", 0.04)) / 100.0
+        balance = float(s.get("balance", 15.0))
 
         if mode == "OURBIT_FUTURES":
-            balance = float(s.get("balance", 15.0))
             leverage = int(s.get("leverage", 100))
             position_value = balance * leverage
             gold_oz = position_value / entry_price if entry_price > 0 else 0.0
-            
-            # کارمزد رفت و برگشت: باز کردن + بستن پوزیشن
-            total_fee = position_value * (fee_rate / 100.0) * 2.0
-            
-            # سود ناخالص و خالص
-            gross_pnl = price_diff * gold_oz
+            used_margin = balance
+
+            gross_pnl = gold_oz * price_diff
+            entry_fee = position_value * fee_rate
+            exit_position_val = gold_oz * (entry_price + price_diff) if entry_price > 0 else position_value
+            exit_fee = exit_position_val * fee_rate
+            total_fee = entry_fee + exit_fee
+
             net_pnl = gross_pnl - total_fee
             net_pct = (net_pnl / balance * 100.0) if balance > 0 else 0.0
+            liq_distance_dollars = (entry_price / leverage) * 0.9 if leverage > 0 else 0.0
 
-            # فاصله تا لیکوئید شدن (با حفظ 0.5% مارجین نگهداری - Maintenance Margin)
-            maint_margin = position_value * 0.005
-            usable_balance = balance - total_fee - maint_margin
-            liq_distance_dollars = (usable_balance / gold_oz) if gold_oz > 0 else 0.0
+        else:
+            lot = float(s.get("lot_size", 0.01))
+            gold_oz = lot * 100.0
+            position_value = gold_oz * entry_price
+            used_margin = (position_value / 100.0)
 
-            return {
-                "mode": mode,
-                "balance": balance,
-                "leverage": leverage,
-                "position_value": position_value,
-                "gold_oz": gold_oz,
-                "fee_rate": fee_rate,
-                "total_fee": round(total_fee, 2),
-                "gross_pnl": round(gross_pnl, 2),
-                "net_pnl": round(net_pnl, 2),
-                "net_pct": round(net_pct, 1),
-                "liq_distance_dollars": max(0.0, round(liq_distance_dollars, 2)),
-                "used_margin": balance
-            }
-        else: # FOREX_MT5
-            lot_size = float(s.get("lot_size", 0.01))
-            gold_oz = lot_size * 100.0  # هر 0.01 لات = 1 انس طلا
-            position_value = entry_price * gold_oz
-            used_margin = (entry_price * gold_oz) / 1000.0 if entry_price > 0 else 0.0
-            total_fee = (position_value * (fee_rate / 100.0) * 2.0) if fee_rate > 0 else 0.0
-            gross_pnl = price_diff * gold_oz
+            gross_pnl = gold_oz * price_diff
+            total_fee = position_value * (fee_rate * 2)
             net_pnl = gross_pnl - total_fee
             net_pct = (net_pnl / used_margin * 100.0) if used_margin > 0 else 0.0
+            liq_distance_dollars = (used_margin / gold_oz) if gold_oz > 0 else 0.0
 
-            return {
-                "mode": mode,
-                "lot_size": lot_size,
-                "gold_oz": gold_oz,
-                "position_value": position_value,
-                "used_margin": round(used_margin, 2),
-                "fee_rate": fee_rate,
-                "total_fee": round(total_fee, 2),
-                "gross_pnl": round(gross_pnl, 2),
-                "net_pnl": round(net_pnl, 2),
-                "net_pct": round(net_pct, 1),
-                "liq_distance_dollars": 0.0,
-                "balance": float(s.get("balance", 15.0))
-            }
+        return {
+            "mode": mode,
+            "balance": balance,
+            "position_value": round(position_value, 2),
+            "used_margin": round(used_margin, 2),
+            "gold_oz": round(gold_oz, 4),
+            "gross_pnl": round(gross_pnl, 2),
+            "total_fee": round(total_fee, 2),
+            "net_pnl": round(net_pnl, 2),
+            "net_pct": round(net_pct, 1),
+            "liq_distance_dollars": round(liq_distance_dollars, 2)
+        }
 
-    # ════════════════════ دیتابیس سیگنال‌ها و تاریخچه ════════════════════
+    # ════════════════════ دیتابیس پایدار و بازیابی ════════════════════
 
     def _determine_counter(self) -> int:
-        max_num = 0
-        for t in self.trade_history:
-            num = t.get("number", 0)
-            if num > max_num:
-                max_num = num
-        if self.active_signal:
-            num = self.active_signal.get("number", 0)
-            if num > max_num:
-                max_num = num
-        return max_num
+        if self.trade_history:
+            return max(t.get("number", 0) for t in self.trade_history)
+        return 0
 
     def _load_history(self) -> List[Dict[str, Any]]:
         if os.path.exists(self.history_file):
@@ -283,65 +245,137 @@ class SignalEvaluator:
         except Exception as e:
             logger.error(f"خطا در ذخیره تاریخچه: {e}")
 
-    def _load_active_signal(self) -> Optional[Dict[str, Any]]:
+    def _load_active_signals(self) -> Dict[str, Dict[str, Any]]:
+        signals = {}
         if os.path.exists(self.active_file):
             try:
                 with open(self.active_file, "r", encoding="utf-8") as f:
-                    sig = json.load(f)
-                    if sig and not sig.get("is_closed"):
-                        if time.time() - sig.get("created_at", 0) < 10800:
-                            logger.info(f"♻️ سیگنال فعال #{sig.get('number')} از دیتابیس بازیابی شد.")
-                            return sig
+                    data = json.load(f)
+                    now = time.time()
+                    if isinstance(data, dict):
+                        # بررسی ساختار جدید دیکشنری کانال‌ها: {channel: signal}
+                        if any("direction" in v for v in data.values() if isinstance(v, dict)):
+                            for ch, sig in data.items():
+                                if isinstance(sig, dict) and not sig.get("is_closed"):
+                                    if now - sig.get("created_at", 0) < 172800:
+                                        signals[ch.lower().replace("@", "").strip()] = sig
+                        # بررسی ساختار قدیمی تک‌سیگنالی
+                        elif "direction" in data and not data.get("is_closed"):
+                            ch = data.get("source_channel", "lordxau").lower().replace("@", "").strip()
+                            signals[ch] = data
             except Exception as e:
-                logger.error(f"خطا در بازیابی سیگنال فعال: {e}")
-        return None
+                logger.error(f"خطا در بازیابی سیگنال‌های فعال: {e}")
+        return signals
 
-    def _save_active_signal(self):
+    def _save_active_signals(self):
         try:
-            if self.active_signal and not self.active_signal.get("is_closed"):
-                saved_copy = self.active_signal.copy()
-                if "profit_alerted_levels" in saved_copy and isinstance(saved_copy["profit_alerted_levels"], set):
-                    saved_copy["profit_alerted_levels"] = list(saved_copy["profit_alerted_levels"])
+            active_map = {}
+            for ch, sig in self.active_signals.items():
+                if sig and not sig.get("is_closed"):
+                    saved_copy = sig.copy()
+                    if "profit_alerted_levels" in saved_copy and isinstance(saved_copy["profit_alerted_levels"], set):
+                        saved_copy["profit_alerted_levels"] = list(saved_copy["profit_alerted_levels"])
+                    active_map[ch] = saved_copy
+
+            if active_map:
                 with open(self.active_file, "w", encoding="utf-8") as f:
-                    json.dump(saved_copy, f, ensure_ascii=False, indent=2)
+                    json.dump(active_map, f, ensure_ascii=False, indent=2)
             else:
                 if os.path.exists(self.active_file):
                     os.remove(self.active_file)
         except Exception as e:
-            logger.error(f"خطا در ذخیره سیگنال فعال: {e}")
+            logger.error(f"خطا در ذخیره سیگنال‌های فعال: {e}")
 
-    def has_active_trade(self) -> bool:
-        """بررسی وجود سیگنال باز و فعال در سیستم"""
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
-        return bool(self.active_signal and not self.active_signal.get("is_closed"))
+    def _save_active_signal(self):
+        self._save_active_signals()
 
-    # ════════════════════ ثبت و مانیتورینگ سیگنال ════════════════════
+    def has_active_trade(self, source_channel: Optional[str] = None) -> bool:
+        """بررسی وجود سیگنال باز و فعال برای کانال مشخص یا هر کانال"""
+        if not self.active_signals:
+            self.active_signals = self._load_active_signals()
 
-    def register_entry(self, direction: str, entry_raw: str, current_price: Optional[float]) -> Tuple[int, str]:
-        if self.active_signal and not self.active_signal.get("is_closed"):
+        if source_channel:
+            clean_ch = source_channel.lower().replace("@", "").strip()
+            sig = self.active_signals.get(clean_ch)
+            return bool(sig and not sig.get("is_closed"))
+
+        return any(bool(s and not s.get("is_closed")) for s in self.active_signals.values())
+
+    # ════════════════════ ثبت و مانیتورینگ سیگنال‌ها (ایزوله به ازای هر کانال) ════════════════════
+
+    def _parse_entry_range(self, entry_raw: str, current_price: Optional[float]) -> Tuple[float, float]:
+        if not entry_raw:
+            p = current_price or 0.0
+            return (p, p)
+
+        raw = entry_raw.replace(" ", "").strip()
+        parts = []
+        if "/" in raw:
+            parts = raw.split("/")
+        elif "-" in raw:
+            parts = raw.split("-")
+        else:
+            parts = [raw]
+
+        nums = []
+        for p in parts:
+            try:
+                nums.append(float(p))
+            except ValueError:
+                pass
+
+        if len(nums) >= 2:
+            return (min(nums[0], nums[1]), max(nums[0], nums[1]))
+        elif len(nums) == 1:
+            return (nums[0], nums[0])
+        else:
+            p = current_price or 0.0
+            return (p, p)
+
+    def register_entry(
+        self, 
+        direction: str, 
+        entry_raw: str, 
+        current_price: Optional[float],
+        source_channel: str = "lordxau",
+        channel_title: str = "LORD XAU (طلا)",
+        symbol: str = "XAUUSD"
+    ) -> Tuple[int, str]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+
+        # اگر برای این کانال معامله بازی از قبل وجود داشت، آن را به عنوان منقضی شده ببند
+        if clean_ch in self.active_signals and not self.active_signals[clean_ch].get("is_closed"):
             self.close_trade(
                 outcome="EXPIRED",
-                reason="سیگنال جدید صادر شد و معامله قبلی جایگزین گردید.",
-                exit_price=current_price
+                reason=f"سیگنال جدید در کانال {channel_title} صادر شد و معامله قبلی جایگزین گردید.",
+                exit_price=current_price,
+                source_channel=clean_ch
             )
 
         self.signal_counter += 1
         sig_num = self.signal_counter
 
-        entry_min, entry_max = self._parse_entry_range(entry_raw, current_price)
-        mid_entry = (entry_min + entry_max) / 2 if (entry_min and entry_max) else (current_price or 0.0)
-        dir_clean = "BUY" if ("buy" in direction.lower() or "بای" in direction.lower()) else "SELL"
+        # محاسبه ورود
+        if symbol == "XAUUSD":
+            entry_min, entry_max = self._parse_entry_range(entry_raw, current_price)
+            mid_entry = (entry_min + entry_max) / 2 if (entry_min and entry_max) else (current_price or 0.0)
+            default_sl = round(mid_entry - 3.0, 2) if direction == "BUY" else round(mid_entry + 3.0, 2)
+        else: # Crypto
+            entry_min, entry_max = (current_price or 0.0), (current_price or 0.0)
+            mid_entry = current_price or 0.0
+            default_sl = round(mid_entry * 0.97, 4) if direction == "BUY" else round(mid_entry * 1.03, 4)
 
-        default_sl = round(mid_entry - 3.0, 2) if dir_clean == "BUY" else round(mid_entry + 3.0, 2)
+        dir_clean = "BUY" if ("buy" in direction.lower() or "long" in direction.lower() or "بای" in direction.lower()) else "SELL"
 
-        # اسنپ‌شات تنظیمات فعلی معامله
         sig_settings = self.settings.copy()
         init_metrics = self.calculate_trade_metrics(mid_entry, 0.0, sig_settings)
 
-        self.active_signal = {
+        new_sig = {
             "id": int(time.time()),
             "number": sig_num,
+            "source_channel": clean_ch,
+            "channel_title": channel_title,
+            "symbol": symbol,
             "direction": dir_clean,
             "entry_min": entry_min,
             "entry_max": entry_max,
@@ -370,126 +404,120 @@ class SignalEvaluator:
             "realized_pnl_pct": 0.0
         }
 
-        self._save_active_signal()
-        logger.info(f"✅ سیگنال ورود #{sig_num} با استاپ موقت {default_sl} ثبت شد.")
-        return sig_num, self.evaluate_signal_status(current_price)
+        self.active_signals[clean_ch] = new_sig
+        self._save_active_signals()
+        logger.info(f"✅ سیگنال ورود #{sig_num} برای کانال {channel_title} ثبت شد.")
+        return sig_num, self.evaluate_signal_status(current_price, source_channel=clean_ch)
 
-    def register_stop(self, stop_val_str: str, current_price: Optional[float]) -> Tuple[str, Optional[str]]:
+    def register_stop(self, stop_val_str: str, current_price: Optional[float], source_channel: str = "lordxau") -> Tuple[str, Optional[str]]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if not sig or sig.get("is_closed"):
+            return "", None
+
         try:
             sl = float(stop_val_str)
         except ValueError:
             return "", None
 
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
+        # اگر استاپ پیپ‌محور باشد و نماد طلا باشد
+        if sl < 500 and sig.get("symbol") == "XAUUSD":
+            d = sig["direction"]
+            entry = sig["entry_price"]
+            sl = round(entry + (sl / 10.0), 2) if d == "SELL" else round(entry - (sl / 10.0), 2)
 
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            # اگر استاپ بر حسب پیپ باشد (زیر ۵۰۰ مانند 90 پیپ)، به قیمت طلا تبدیلش کن
-            if sl < 500:
-                d = self.active_signal["direction"]
-                entry = self.active_signal["entry_price"]
-                sl_dollars = sl / 10.0
-                sl = round(entry + sl_dollars, 2) if d == "SELL" else round(entry - sl_dollars, 2)
+        sig["stop_loss"] = sl
+        sig["is_default_sl"] = False
+        self._save_active_signals()
+        logger.info(f"✅ حد ضرر سیگنال #{sig['number']} کانال {sig.get('channel_title')} به عدد {sl} آپدیت شد.")
 
-            self.active_signal["stop_loss"] = sl
-            self.active_signal["is_default_sl"] = False
-            self._save_active_signal()
-            logger.info(f"✅ حد ضرر سیگنال #{self.active_signal['number']} به عدد {sl} آپدیت شد.")
+        if current_price and not sig.get("is_win") and not sig.get("target_hit"):
+            d = sig["direction"]
+            is_hit = (d == "BUY" and current_price <= sl) or (d == "SELL" and current_price >= sl)
+            if is_hit:
+                outcome_report = self.close_trade("LOSS", f"استاپ‌لاس اعلامی ({sl}) بلافاصله لمس شد.", current_price, source_channel=clean_ch)
+                return f"🛑 <b>حد ضرر لمس شد:</b> <code>{sl}</code>", outcome_report
 
-            if current_price and not self.active_signal.get("is_win") and not self.active_signal.get("target_hit"):
-                d = self.active_signal["direction"]
-                is_hit = (d == "BUY" and current_price <= sl) or (d == "SELL" and current_price >= sl)
-                if is_hit:
-                    outcome_report = self.close_trade("LOSS", f"استاپ‌لاس اعلامی ({sl}) بلافاصله در قیمت {current_price:.2f} لمس شد.", current_price)
-                    return f"🛑 <b>حد ضرر لمس شد:</b> <code>{sl}</code>", outcome_report
+        return self.evaluate_signal_status(current_price, source_channel=clean_ch), None
 
-            return self.evaluate_signal_status(current_price), None
-        else:
-            logger.warning("پیام Stop دریافت شد اما سیگنال بازی یافت نشد.")
-            return f"🛑 <b>حد ضرر اعلامی:</b> <code>{sl}</code> (سیگنال بازی برای اتصال یافت نشد)", None
-
-    def register_risk_free(self) -> Tuple[bool, str]:
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
-
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            sig = self.active_signal
+    def register_risk_free(self, source_channel: str = "lordxau") -> Tuple[bool, str]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if sig and not sig.get("is_closed"):
             sig["is_risk_free"] = True
             sig["is_win"] = True
             sig["stop_loss"] = sig["entry_price"]
-            self._save_active_signal()
+            self._save_active_signals()
 
+            ch_title = sig.get("channel_title", f"@{clean_ch}")
             msg = (
+                f"📢 <b>کانال:</b> {ch_title}\n"
                 f"🛡 <b>معامله سیگنال #{sig['number']} ریسک‌فری شد!</b>\n\n"
                 f"📌 حد ضرر (SL) دقیقاً به نقطه ورود (<code>{sig['entry_price']:.2f}</code>) منتقل شد.\n"
                 f"در صورت برگشت قیمت، معامله سر‌به‌سر (فقط با کسر کارمزد صرافی) بسته می‌شود."
             )
             return True, msg
-        return False, "⚠️ سیگنال فعالی برای ریسک‌فری یافت نشد."
+        return False, "⚠️ سیگنال فعالی برای این کانال یافت نشد."
 
-    def register_manual_close(self, current_price: Optional[float], reason: str = "دستور بستن (ببند / فول کلوز) توسط ادمین") -> Tuple[bool, str, Optional[str]]:
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
+    def register_manual_close(self, current_price: Optional[float], source_channel: str = "lordxau", reason: str = "دستور بستن توسط ادمین") -> Tuple[bool, str, Optional[str]]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if not sig or sig.get("is_closed"):
+            return False, "⚠️ سیگنال بازی برای این کانال یافت نشد.", None
 
-        if not self.active_signal or self.active_signal.get("is_closed"):
-            return False, "⚠️ سیگنال بازی برای بستن یافت نشد.", None
-
-        sig = self.active_signal
         exit_p = current_price or sig["entry_price"]
         direction = sig["direction"]
         entry = sig["entry_price"]
 
         pnl_points = (exit_p - entry) if direction == "BUY" else (entry - exit_p)
-        pips = int(pnl_points * 10)
         outcome = "WIN" if pnl_points >= 0 else "LOSS"
 
         outcome_report = self.close_trade(
             outcome=outcome,
-            reason=f"{reason} در قیمت {exit_p:.2f} ({'+' if pnl_points>=0 else ''}{pnl_points:.2f}$ / {pips} پیپ)",
-            exit_price=exit_p
+            reason=f"{reason} در قیمت {exit_p:.2f}",
+            exit_price=exit_p,
+            source_channel=clean_ch
         )
-        return True, f"🔒 <b>سیگنال #{sig['number']} با موفقیت بسته شد.</b>", outcome_report
+        return True, f"🔒 <b>سیگنال #{sig['number']} کانال {sig.get('channel_title')} با موفقیت بسته شد.</b>", outcome_report
 
-    def register_break_even(self, current_price: Optional[float]) -> Optional[str]:
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
-
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            max_p = self.active_signal.get("max_profit", 0.0)
-            reason = f"سیگنال پس از ثبت بیشینه سود {max_p:.1f}$ (+{int(max_p*10)} پیپ)، در نقطه ورود بسته شد."
-            return self.close_trade("BREAK_EVEN_WIN", reason, current_price)
+    def register_break_even(self, current_price: Optional[float], source_channel: str = "lordxau") -> Optional[str]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if sig and not sig.get("is_closed"):
+            max_p = sig.get("max_profit", 0.0)
+            reason = f"سیگنال پس از ثبت بیشینه سود {max_p:.1f}$، در نقطه ورود بسته شد."
+            return self.close_trade("BREAK_EVEN_WIN", reason, current_price, source_channel=clean_ch)
         return None
 
-    def register_stop_hit_message(self, current_price: Optional[float]) -> Optional[str]:
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
-
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            if self.active_signal.get("target_hit"):
-                return self.close_trade("PARTIAL_WIN_THEN_SL", "ادمین اعلام استاپ کرد، اما تارگت سود قبلاً محقق شده بود و معامله با سود تارگت بسته شد.", current_price)
-            if self.active_signal.get("is_win") or self.active_signal.get("is_risk_free"):
-                return self.close_trade("BREAK_EVEN_WIN", "ادمین اعلام استاپ کرد اما معامله ریسک‌فری شده بود و معامله در نقطه ورود بسته شد.", current_price)
-            return self.close_trade("LOSS", "ادمین کانال اعلام کرد حد ضرر (استاپ) تاچ شد.", current_price)
+    def register_stop_hit_message(self, current_price: Optional[float], source_channel: str = "lordxau") -> Optional[str]:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if sig and not sig.get("is_closed"):
+            if sig.get("target_hit"):
+                return self.close_trade("PARTIAL_WIN_THEN_SL", "ادمین اعلام استاپ کرد، اما تارگت سود قبلاً محقق شده بود و معامله با سود تارگت بسته شد.", current_price, source_channel=clean_ch)
+            if sig.get("is_win") or sig.get("is_risk_free"):
+                return self.close_trade("BREAK_EVEN_WIN", "ادمین اعلام استاپ کرد اما معامله ریسک‌فری شده بود و در نقطه ورود بسته شد.", current_price, source_channel=clean_ch)
+            return self.close_trade("LOSS", "ادمین کانال اعلام کرد حد ضرر تاچ شد.", current_price, source_channel=clean_ch)
         return None
 
-    def close_trade(self, outcome: str, reason: str, exit_price: Optional[float]) -> str:
-        if not self.active_signal:
+    def close_trade(self, outcome: str, reason: str, exit_price: Optional[float], source_channel: str = "lordxau") -> str:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if not sig:
             return ""
 
-        sig = self.active_signal
         sig_settings = sig.get("settings", self.settings)
         entry = sig["entry_price"]
         exit_p = exit_price or entry
         direction = sig["direction"]
 
-        # محافظت بحرانی: اگر به تارگت رسیده باشد نباید باخت شود
         if (sig.get("is_win") or sig.get("target_hit") or sig.get("is_risk_free")) and outcome == "LOSS":
             if sig.get("target_hit"):
                 outcome = "PARTIAL_WIN_THEN_SL"
-                reason = f"سیگنال ابتدا به تارگت سود (+{sig.get('max_profit', 0.0):.1f}$ / +{int(sig.get('max_profit', 0.0)*10)} پیپ) رسید و در برگشت استاپ خورد."
+                reason = f"سیگنال ابتدا به تارگت سود رسید و در برگشت بازار استاپ خورد."
             else:
                 outcome = "BREAK_EVEN_WIN"
-                reason = f"سیگنال قبلاً به سود +{sig.get('max_profit', 0.0):.1f}$ (+{int(sig.get('max_profit', 0.0)*10)} پیپ) رسیده بود و در نقطه ورود سر‌به‌سر شد."
+                reason = f"سیگنال قبلاً به سود رسیده بود و در نقطه ورود سر‌به‌سر شد."
 
         sig["is_closed"] = True
         sig["outcome"] = outcome
@@ -497,11 +525,9 @@ class SignalEvaluator:
         sig["exit_price"] = exit_p
         sig["closed_at"] = time.time()
 
-        # محاسبه سود و زیان دقیق بر اساس پلتفرم و کارمزد
         max_p = sig.get("max_profit", 0.0)
 
         if outcome == "BREAK_EVEN_WIN":
-            # در ریسک‌فری: سود چارت 0.0 است ولی کارمزد صرافی کسر می‌شود!
             m = self.calculate_trade_metrics(entry, 0.0, sig_settings)
             gross_pnl = 0.0
             total_fee = m["total_fee"]
@@ -509,7 +535,6 @@ class SignalEvaluator:
             net_pct = round((net_pnl / m["balance"] * 100.0), 1) if m["balance"] > 0 else 0.0
 
         elif outcome in ["WIN", "PARTIAL_WIN_THEN_SL"]:
-            # سود بر اساس بیشینه حرکت به سمت تارگت
             profit_points = max_p if max_p > 0 else abs(exit_p - entry)
             m = self.calculate_trade_metrics(entry, profit_points, sig_settings)
             gross_pnl = m["gross_pnl"]
@@ -519,11 +544,10 @@ class SignalEvaluator:
 
         elif outcome == "LOSS":
             sl = sig.get("stop_loss")
-            sl_dist = abs(entry - sl) if sl else 3.0
+            sl_dist = abs(entry - sl) if sl else (3.0 if sig.get("symbol") == "XAUUSD" else entry * 0.03)
             m = self.calculate_trade_metrics(entry, -sl_dist, sig_settings)
             gross_pnl = m["gross_pnl"]
             total_fee = m["total_fee"]
-            # در باخت، اگر کل مارجین از دست برود:
             net_pnl = max(-m["balance"], m["net_pnl"])
             net_pct = -100.0
 
@@ -545,29 +569,20 @@ class SignalEvaluator:
         self.trade_history.append(saved_copy)
         self._save_history()
 
-        self.active_signal = None
-        if os.path.exists(self.active_file):
-            try:
-                os.remove(self.active_file)
-            except Exception:
-                pass
+        del self.active_signals[clean_ch]
+        self._save_active_signals()
 
         return self._format_outcome_report(saved_copy)
 
     def _format_outcome_report(self, sig: Dict[str, Any]) -> str:
         sig_num = sig.get("number", 1)
         outcome = sig["outcome"]
-        direction = sig["direction"]
-        entry = sig["entry_price"]
-        exit_p = sig.get("exit_price", entry)
-        max_p = sig.get("max_profit", 0.0)
-        pips = int(max_p * 10)
+        ch_title = sig.get("channel_title", f"@{sig.get('source_channel', 'lordxau')}")
+        symbol = sig.get("symbol", "XAUUSD")
         
         s = sig.get("settings", self.settings)
         mode = s.get("mode", "OURBIT_FUTURES")
         balance = float(s.get("balance", 15.0))
-        lev = int(s.get("leverage", 100))
-        pos_val = balance * lev
         fee_rate = float(s.get("fee_rate", 0.04))
 
         gross_pnl = sig.get("realized_gross_pnl", 0.0)
@@ -575,201 +590,120 @@ class SignalEvaluator:
         net_pnl = sig.get("realized_pnl_usd", 0.0)
         net_pct = sig.get("realized_pnl_pct", 0.0)
 
-        stats = self.get_stats_summary()
-
-        # تنظیم سربرگ و اطلاعات پلتفرم
-        if mode == "OURBIT_FUTURES":
-            platform_bar = f"⚙️ <b>حالت:</b> Ourbit | <b>سرمایه:</b> ${balance:.2f} | <b>اهرم:</b> {lev}x (ارزش پوزیشن: ${pos_val:,.0f})"
-        else:
-            lot = s.get("lot_size", 0.01)
-            platform_bar = f"⚙️ <b>حالت:</b> Forex MT5 | <b>حجم:</b> {lot} Lot ({lot*100:.1f} انس)"
-
-        gross_symbol = "+" if gross_pnl >= 0 else ""
-        net_symbol = "+" if net_pnl >= 0 else ""
+        header_banner = f"📢 <b>کانال:</b> {ch_title}\n"
 
         if outcome == "WIN":
-            header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: درست درآمد (WIN) ✅</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): درست درآمد (WIN) ✅</b>"
             badge = "🟢 <b>موفق (سودده)</b>"
             pnl_details = (
-                f"📈 <b>سود ناخالص چارت:</b> <code>+{gross_pnl:.2f}$</code>\n"
+                f"📈 <b>سود ناخالص:</b> <code>+{gross_pnl:.2f}$</code>\n"
                 f"💸 <b>کارمزد صرافی ({fee_rate}%):</b> <code>-${total_fee:.2f}</code>\n"
                 f"💰 <b>سود خالص دریافتی شما:</b> <code>+{net_pnl:.2f}$</code> (<b>+{net_pct:.0f}%</b>) 🚀"
             )
         elif outcome == "PARTIAL_WIN_THEN_SL":
-            header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: تارگت محقق شده (سپس استاپ) ✅</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): تارگت محقق شده (سپس استاپ) ✅</b>"
             badge = "🟡 <b>تارگت اول زده شد (Partial Win)</b>"
             pnl_details = (
                 f"📈 <b>سود ناخالص تارگت:</b> <code>+{gross_pnl:.2f}$</code>\n"
                 f"💸 <b>کارمزد صرافی ({fee_rate}%):</b> <code>-${total_fee:.2f}</code>\n"
                 f"💰 <b>سود خالص شما:</b> <code>+{net_pnl:.2f}$</code> (<b>+{net_pct:.0f}%</b>)\n"
-                f"⚠️ <i>معامله ابتدا به تارگت رسید و سود خود را ثبت کرد، سپس با بازگشت بازار استاپ خورد.</i>"
+                f"⚠️ <i>معامله ابتدا به تارگت رسید و سود ثبت کرد، سپس با بازگشت بازار استاپ خورد.</i>"
             )
         elif outcome == "BREAK_EVEN_WIN":
-            header = f"🏆 <b>نتیجه نهایی سیگنال #{sig_num}: خروج در نقطه ورود (Risk-Free)</b>"
-            badge = "🟡 <b>ریسک‌فری (خروج بدون سود چارت)</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): خروج سر‌به‌سر (Risk-Free)</b>"
+            badge = "🟡 <b>ریسک‌فری (بدون سود چارت)</b>"
             pnl_details = (
-                f"🟡 <b>بسته شدن در نقطه ورود (فری):</b> سود چارت <code>$0.00</code> | کسر کارمزد صرافی: <code>-${total_fee:.2f}</code> (<b>ضرر خالص: <code>-${total_fee:.2f}</code></b>)\n"
-                f"💸 <b>تغییر خالص موجودی شما:</b> <code>-${total_fee:.2f}</code> (کسر کارمزد رفت‌وبرگشت پوزیشن)"
+                f"🟡 <b>بسته شدن در نقطه ورود:</b> سود چارت <code>$0.00</code> | کارمزد: <code>-${total_fee:.2f}</code>\n"
+                f"💸 <b>تغییر خالص موجودی:</b> <code>-${total_fee:.2f}</code> (کسر کارمزد رفت‌وبرگشت)"
             )
         elif outcome == "LOSS":
-            header = f"🚨 <b>نتیجه نهایی سیگنال #{sig_num}: اشتباه درآمد (LOSS) ❌</b>"
+            header = f"{header_banner}🚨 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): اشتباه درآمد (LOSS) ❌</b>"
             badge = "🔴 <b>ناموفق (استاپ خورد)</b>"
             pnl_details = (
-                f"📉 <b>ضرر ناخالص استاپ:</b> <code>{gross_symbol}${gross_pnl:.2f}</code>\n"
+                f"📉 <b>ضرر ناخالص استاپ:</b> <code>-${abs(gross_pnl):.2f}</code>\n"
                 f"💸 <b>کارمزد صرافی ({fee_rate}%):</b> <code>-${total_fee:.2f}</code>\n"
                 f"💸 <b>مجموع زیان خالص این معامله:</b> <code>-${abs(net_pnl):.2f}</code>"
             )
         else:
-            header = f"⚪️ <b>نتیجه نهایی سیگنال #{sig_num}: پایان معامله</b>"
-            badge = "⚪️ <b>بدون سود و ضرر</b>"
-            pnl_details = f"💵 <b>تغییر موجودی شما:</b> <code>$0.00</code>"
-
-        report = (
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{header}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{platform_bar}\n"
-            f"🔸 <b>شماره سیگنال:</b> #{sig_num}\n"
-            f"🔸 <b>نماد:</b> XAUUSD (طلا)\n"
-            f"🔸 <b>نوع سیگنال:</b> {direction}\n"
-            f"🔸 <b>نقطه ورود:</b> <code>{sig['entry_raw']}</code> (~{entry:.2f})\n"
-            f"🔸 <b>خروج در:</b> <code>{exit_p:.2f}</code>\n"
-            f"🔸 <b>بیشترین حرکت طلا:</b> <code>+{max_p:.1f}$</code> (+{pips} پیپ)\n"
-            f"🔸 <b>وضعیت:</b> {badge}\n\n"
-            f"{pnl_details}\n\n"
-            f"📝 <b>دلیل و شرح:</b>\n<i>{sig['outcome_reason']}</i>\n\n"
-            f"📊 <b>کارنامه کل سیگنال‌ها:</b>\n{stats}"
-        )
-        return report
-
-    def get_stats_summary(self) -> str:
-        if not self.trade_history:
-            return f"<i>هنوز سابقه‌ای ثبت نشده است. (سرمایه مبنا: ${self.trade_budget:.2f})</i>"
-
-        wins = sum(1 for t in self.trade_history if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
-        losses = sum(1 for t in self.trade_history if t.get("outcome") == "LOSS")
-        total = wins + losses
-        win_rate = (wins / total * 100) if total > 0 else 0
-
-        total_gross = sum(t.get("realized_gross_pnl", 0.0) for t in self.trade_history)
-        total_fees = sum(t.get("total_fee", 0.0) for t in self.trade_history)
-        total_net = sum(t.get("realized_pnl_usd", 0.0) for t in self.trade_history)
-
-        gross_symbol = "+" if total_gross >= 0 else ""
-        net_symbol = "+" if total_net >= 0 else ""
+            header = f"{header_banner}⚪️ <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): پایان معامله</b>"
+            badge = "⚪️ <b>منقضی / نامشخص</b>"
+            pnl_details = f"علت خروج: {sig.get('outcome_reason', 'پایان زمان')}"
 
         return (
-            f"• کل سیگنال‌ها: <b>{len(self.trade_history)}</b> (برد: <b>{wins} ✅</b> | باخت: <b>{losses} ❌</b>)\n"
-            f"• نرخ موفقیت (Win Rate): <b>{win_rate:.0f}%</b>\n"
-            f"• 📈 <b>جمع سود/زیان ناخالص معاملات:</b> <code>{gross_symbol}${total_gross:.2f}</code>\n"
-            f"• 💸 <b>کل کارمزد پرداختی به صرافی:</b> <code>-${total_fees:.2f}</code>\n"
-            f"• 💰 <b>سود/زیان خالص نهایی حساب:</b> <code>{net_symbol}${total_net:.2f}</code>"
+            f"{header}\n\n"
+            f"🔸 <b>وضعیت:</b> {badge}\n"
+            f"🔹 <b>جهت:</b> {sig['direction']} | <b>نقطه ورود:</b> <code>{sig['entry_price']:.2f}</code>\n"
+            f"🔹 <b>خروج در:</b> <code>{sig.get('exit_price', sig['entry_price']):.2f}</code>\n\n"
+            f"{pnl_details}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{self.get_stats_summary()}"
         )
 
-    def _parse_entry_range(self, entry_raw: str, current_price: Optional[float]) -> Tuple[float, float]:
-        import re
-        nums = [float(n) for n in re.findall(r'\d+(?:\.\d+)?', entry_raw)]
-        if len(nums) >= 2:
-            return min(nums[0], nums[1]), max(nums[0], nums[1])
-        elif len(nums) == 1:
-            return nums[0] - 0.5, nums[0] + 0.5
-        elif current_price:
-            return current_price - 0.5, current_price + 0.5
-        else:
-            return 0.0, 0.0
+    def evaluate_signal_status(self, current_price: Optional[float], source_channel: str = "lordxau") -> str:
+        clean_ch = source_channel.lower().replace("@", "").strip()
+        sig = self.active_signals.get(clean_ch)
+        if not sig:
+            return "سیگنال فعالی برای این کانال وجود ندارد."
 
-    def evaluate_signal_status(self, current_price: Optional[float]) -> str:
-        if not self.active_signal or not current_price:
-            return "⏳ <i>قیمت لحظه‌ای بازار در دسترس نیست</i>"
-
-        sig = self.active_signal
         direction = sig["direction"]
-        e_min = sig["entry_min"]
-        e_max = sig["entry_max"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
-        
+        symbol = sig.get("symbol", "XAUUSD")
         s = sig.get("settings", self.settings)
-        mode = s.get("mode", "OURBIT_FUTURES")
         balance = float(s.get("balance", 15.0))
         fee_rate = float(s.get("fee_rate", 0.04))
 
-        # متریک‌های پوزیشن
-        m_zero = self.calculate_trade_metrics(entry, 0.0, s)
-        total_fee = m_zero["total_fee"]
-
-        # پیش‌بینی سود تارگت‌ها با کسر کارمزد
-        m_tp1 = self.calculate_trade_metrics(entry, 2.0, s)   # +20 pips = $2.0
-        m_tp2 = self.calculate_trade_metrics(entry, 3.5, s)   # +35 pips = $3.5
+        m_tp1 = self.calculate_trade_metrics(entry, 2.0, s)
         sl_dist = abs(entry - sl) if sl else 3.0
         m_sl = self.calculate_trade_metrics(entry, -sl_dist, s)
 
-        status_lines = []
-
-        # سربرگ تنظیمات فعال
-        if mode == "OURBIT_FUTURES":
-            lev = int(s.get("leverage", 100))
-            pos_val = balance * lev
-            status_lines.append(f"⚙️ <b>حالت:</b> Ourbit | <b>سرمایه:</b> ${balance:.2f} | <b>اهرم:</b> {lev}x (ارزش: ${pos_val:,.0f})")
-            if m_zero["liq_distance_dollars"] > 0:
-                liq_price = entry - m_zero["liq_distance_dollars"] if direction == "BUY" else entry + m_zero["liq_distance_dollars"]
-                status_lines.append(f"☠️ <b>قیمت تخمینی لیکوئید:</b> <code>${liq_price:.2f}</code> (فاصله: <code>{m_zero['liq_distance_dollars']:.2f}$</code>)")
-        else:
-            lot = s.get("lot_size", 0.01)
-            status_lines.append(f"⚙️ <b>حالت:</b> Forex MT5 | <b>حجم:</b> {lot} Lot ({lot*100:.1f} انس) | <b>مارجین:</b> ~${m_zero['used_margin']:.2f}")
-
-        status_lines.append(f"💸 <b>کارمزد رفت‌وبرگشت ({fee_rate}%):</b> <code>-${total_fee:.2f}</code>")
-        status_lines.append(f"💵 <b>قیمت لحظه‌ای طلا (XAUUSD):</b> <code>${current_price:.2f}</code>")
-
-        if direction == "BUY":
-            if e_min <= current_price <= e_max:
-                status_lines.append("🟢 <b>وضعیت ورود:</b> <b>عالی (در محدوده خرید)</b> ✅")
-            elif current_price > e_max:
-                diff = current_price - e_max
-                status_lines.append(f"🟡 <b>وضعیت ورود:</b> <code>+{diff:.2f}$</code> بالاتر از زون")
-            else:
-                diff = e_min - current_price
-                status_lines.append(f"🔵 <b>وضعیت ورود:</b> <code>{diff:.2f}$</code> پایین‌تر از زون")
-
-            if sl:
-                dist_sl = current_price - sl
-                status_lines.append(f"🛑 <b>حد ضرر:</b> <code>{sl:.2f}</code> (فاصله: <code>{dist_sl:.2f}$</code>)")
-        else:
-            if e_min <= current_price <= e_max:
-                status_lines.append("🟢 <b>وضعیت ورود:</b> <b>عالی (در محدوده فروش)</b> ✅")
-            elif current_price < e_min:
-                diff = e_min - current_price
-                status_lines.append(f"🟡 <b>وضعیت ورود:</b> <code>-{diff:.2f}$</code> ریخته")
-            else:
-                diff = current_price - e_max
-                status_lines.append(f"🔵 <b>وضعیت ورود:</b> <code>{diff:.2f}$</code> بالاتر از زون")
-
-            if sl:
-                dist_sl = sl - current_price
-                status_lines.append(f"🛑 <b>حد ضرر:</b> <code>{sl:.2f}</code> (فاصله: <code>{dist_sl:.2f}$</code>)")
-
-        status_lines.append("")
-        status_lines.append(f"💰 <b>پیش‌بینی سود و زیان (با کسر کارمزد ${total_fee:.2f}):</b>")
-        status_lines.append(f"• تارگت اول (+۲۰ پیپ): ناخالص: <code>+${m_tp1['gross_pnl']:.2f}</code> | <b>خالص: <code>{'+' if m_tp1['net_pnl']>=0 else ''}${m_tp1['net_pnl']:.2f}</code></b>")
-        status_lines.append(f"• تارگت دوم (+۳۵ پیپ): ناخالص: <code>+${m_tp2['gross_pnl']:.2f}</code> | <b>خالص: <code>{'+' if m_tp2['net_pnl']>=0 else ''}${m_tp2['net_pnl']:.2f}</code></b>")
-        status_lines.append(f"• در صورت استاپ: ناخالص: <code>-${abs(m_sl['gross_pnl']):.2f}</code> | <b>خالص با کارمزد: <code>-${abs(m_sl['net_pnl']):.2f}</code></b>")
-
+        status_lines = [
+            f"📢 <b>کانال:</b> {sig.get('channel_title', clean_ch)}",
+            f"📊 <b>نماد:</b> <code>{symbol}</code> | <b>جهت:</b> <b>{direction}</b> | <b>نقطه ورود:</b> <code>{entry:.2f}</code>",
+            f"🛑 <b>حد ضرر:</b> <code>{sl:.2f}</code>" if sl else "🛑 <b>حد ضرر:</b> مشخص نشده",
+            f"💰 <b>پیش‌بینی سود و زیان:</b>",
+            f"• تارگت اول (+۲۰ پیپ): خالص <b><code>+{m_tp1['net_pnl']:.2f}$</code></b>",
+            f"• در صورت استاپ: خالص با کارمزد <b><code>-${abs(m_sl['net_pnl']):.2f}</code></b>"
+        ]
         return "\n".join(status_lines)
 
-    def check_live_status_change(self, current_price: float) -> Optional[str]:
-        if not self.active_signal:
-            self.active_signal = self._load_active_signal()
+    # ════════════════════ بررسی زنده وضعیت برای همه کانال‌ها ════════════════════
 
-        if not self.active_signal or self.active_signal.get("is_closed") or not current_price:
-            return None
+    def check_live_status_change(self, get_price_func_or_price: Any) -> List[str]:
+        alerts = []
+        if not self.active_signals:
+            self.active_signals = self._load_active_signals()
 
-        sig = self.active_signal
+        for ch, sig in list(self.active_signals.items()):
+            if not sig or sig.get("is_closed"):
+                continue
+
+            symbol = sig.get("symbol", "XAUUSD")
+            if callable(get_price_func_or_price):
+                cur_price = get_price_func_or_price(symbol)
+            elif isinstance(get_price_func_or_price, (int, float)):
+                cur_price = float(get_price_func_or_price)
+            else:
+                continue
+
+            if not cur_price:
+                continue
+
+            alert = self._check_single_trade_live(sig, cur_price, source_channel=ch)
+            if alert:
+                alerts.append(alert)
+
+        return alerts
+
+    def _check_single_trade_live(self, sig: Dict[str, Any], current_price: float, source_channel: str) -> Optional[str]:
         sig_num = sig.get("number", 1)
         direction = sig["direction"]
         e_min = sig["entry_min"]
         e_max = sig["entry_max"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
+        symbol = sig.get("symbol", "XAUUSD")
+        ch_title = sig.get("channel_title", f"@{source_channel}")
         s = sig.get("settings", self.settings)
 
         if direction == "BUY":
@@ -784,146 +718,120 @@ class SignalEvaluator:
         if drawdown > sig["max_drawdown"]:
             sig["max_drawdown"] = drawdown
 
-        # ۱. رسیدن به تارگت سود (سود ۲ دلار یا ۲۰ پیپ به بالا):
-        if cur_profit >= 2.0 and not sig.get("target_hit"):
+        # ۱. رسیدن به تارگت سود (برای طلا: ۲ دلار / برای کریپتو: ۲ درصد)
+        threshold = 2.0 if symbol == "XAUUSD" else (entry * 0.015)
+        if cur_profit >= threshold and not sig.get("target_hit"):
             sig["target_hit"] = True
             sig["is_win"] = True
-            self._save_active_signal()
+            self._save_active_signals()
 
             m_cur = self.calculate_trade_metrics(entry, cur_profit, s)
-            sl_info = f"<code>{sl:.2f}</code>" if sl else "استاپ اولیه"
             net_sign = "+" if m_cur["net_pnl"] >= 0 else ""
 
             return (
-                f"🎯 <b>تارگت سیگنال #{sig_num} محقق شد! (+{cur_profit:.1f}$)</b>\n\n"
-                f"طلا به سود <b>+{int(cur_profit*10)} پیپ</b> رسید! 🚀\n"
-                f"💵 قیمت لحظه‌ای: <code>${current_price:.2f}</code>\n"
+                f"📢 <b>کانال:</b> {ch_title}\n"
+                f"🎯 <b>تارگت سیگنال #{sig_num} ({symbol}) محقق شد!</b>\n\n"
+                f"قیمت لحظه‌ای: <code>{current_price:.2f}</code>\n"
                 f"📈 <b>سود ناخالص:</b> <code>+{m_cur['gross_pnl']:.2f}$</code> | 💸 <b>کارمزد:</b> <code>-${m_cur['total_fee']:.2f}</code>\n"
-                f"💰 <b>سود خالص شما:</b> <code>{net_sign}${m_cur['net_pnl']:.2f}</code> (<b>+{m_cur['net_pct']:.0f}%</b>)\n\n"
-                f"✅ تارگت اول محقق شد و معامله به عنوان برد (WIN) ثبت گردید.\n"
-                f"📌 حد ضرر روی استاپ اصلی ادمین ({sl_info}) حفظ شده و با ارسال دستور «فری کن» در کانال به نقطه ورود منتقل خواهد شد."
+                f"💰 <b>سود خالص شما:</b> <code>{net_sign}${m_cur['net_pnl']:.2f}</code> (<b>+{m_cur['net_pct']:.0f}%</b>) 🚀\n\n"
+                f"✅ تارگت اول محقق شد و معامله به عنوان برد (WIN) ثبت گردید."
             )
 
-        # ۲. بررسی بازگشت قیمت به نقطه ورود (فقط در صورتی که ادمین معامله را ریسک‌فری کرده باشد):
+        # ۲. بازگشت به نقطه ورود پس از ریسک‌فری
         if sig.get("is_risk_free"):
-            is_returned_to_entry = (direction == "BUY" and current_price <= entry) or (direction == "SELL" and current_price >= entry)
-            if is_returned_to_entry:
-                return self.close_trade("BREAK_EVEN_WIN", "سیگنال پس از ریسک‌فری، در نقطه ورود سر‌به‌سر بسته شد.", current_price)
+            is_returned = (direction == "BUY" and current_price <= entry) or (direction == "SELL" and current_price >= entry)
+            if is_returned:
+                return self.close_trade("BREAK_EVEN_WIN", "سیگنال پس از ریسک‌فری، در نقطه ورود بسته شد.", current_price, source_channel=source_channel)
 
-        # ۳. لمس حد ضرر:
+        # ۳. لمس حد ضرر
         if sl:
             is_stopped = (direction == "BUY" and current_price <= sl) or (direction == "SELL" and current_price >= sl)
             if is_stopped:
                 if sig.get("target_hit"):
-                    return self.close_trade(
-                        "PARTIAL_WIN_THEN_SL",
-                        f"سیگنال ابتدا تارگت اول (+{sig['max_profit']:.1f}$ / +{int(sig['max_profit']*10)} پیپ) را تاچ کرد و در بازگشت بازار، حد ضرر ({sl:.2f}) لمس شد.",
-                        current_price
-                    )
+                    return self.close_trade("PARTIAL_WIN_THEN_SL", f"تارگت قبلاً محقق شده بود و در بازگشت استاپ ({sl:.2f}) لمس شد.", current_price, source_channel=source_channel)
                 elif sig.get("is_risk_free") or sig.get("is_win"):
-                    return self.close_trade("BREAK_EVEN_WIN", f"حد ضرر ریسک‌فری ({sl:.2f}) لمس شد.", current_price)
+                    return self.close_trade("BREAK_EVEN_WIN", f"حد ضرر ریسک‌فری ({sl:.2f}) لمس شد.", current_price, source_channel=source_channel)
                 else:
-                    return self.close_trade("LOSS", f"قیمت طلا به {current_price:.2f} رسید و حد ضرر ({sl:.2f}) لمس شد.", current_price)
+                    return self.close_trade("LOSS", f"قیمت به {current_price:.2f} رسید و حد ضرر ({sl:.2f}) لمس شد.", current_price, source_channel=source_channel)
 
         # ۴. ورود به محدوده
         if not sig["entered_zone_alerted"] and (e_min <= current_price <= e_max):
             sig["entered_zone_alerted"] = True
-            self._save_active_signal()
+            self._save_active_signals()
             return (
-                f"🎯 <b>سیگنال #{sig_num}: طلا وارد زون ورود شد!</b>\n\n"
-                f"جهت: <b>{direction}</b> | قیمت: <code>${current_price:.2f}</code>\n"
-                f"محدوده ورود: <code>{sig['entry_raw']}</code>\n"
-                f"⚡️ پوزیشن با سرمایه تنظیمی آماده است."
+                f"📢 <b>کانال:</b> {ch_title}\n"
+                f"🎯 <b>سیگنال #{sig_num} ({symbol}): وارد زون ورود شد!</b>\n\n"
+                f"جهت: <b>{direction}</b> | قیمت: <code>{current_price:.2f}</code>\n"
+                f"محدوده ورود: <code>{sig['entry_raw']}</code>"
             )
 
-        # ۵. منقضی کردن بعد از ۴۵ دقیقه
-        if time.time() - sig["created_at"] > 2700:
-            if sig.get("is_win") or sig["max_profit"] >= 2.0:
-                return self.close_trade("WIN", f"سیگنال پس از ثبت بیشینه سود +{sig['max_profit']:.1f}$ به پایان رسید.", current_price)
+        # ۵. منقضی شدن بعد از ۲ ساعت
+        if time.time() - sig["created_at"] > 7200:
+            if sig.get("is_win") or sig["max_profit"] >= threshold:
+                return self.close_trade("WIN", f"سیگنال پس از ثبت سود به پایان رسید.", current_price, source_channel=source_channel)
             else:
-                return self.close_trade("EXPIRED", "سیگنال پس از ۴۵ دقیقه به پایان رسید.", current_price)
+                return self.close_trade("EXPIRED", "سیگنال پس از زمان مجاز منقضی شد.", current_price, source_channel=source_channel)
 
         return None
 
-    def mark_user_participation(self, signal_number: int, entered: bool) -> str:
-        if self.active_signal and self.active_signal.get("number") == signal_number:
-            self.active_signal["user_entered"] = entered
-            self._save_active_signal()
+    # ════════════════════ تفکیک کارنامه و آمار کل ════════════════════
 
-        for t in self.trade_history:
-            if t.get("number") == signal_number:
-                t["user_entered"] = entered
-                self._save_history()
-                break
+    def get_stats_summary(self, channel_filter: Optional[str] = None) -> str:
+        trades = self.trade_history
+        if channel_filter:
+            clean_f = channel_filter.lower().replace("@", "").strip()
+            trades = [t for t in trades if t.get("source_channel", "").lower() == clean_f]
 
-        if entered:
-            return f"✅ سیگنال #{signal_number} در کارنامه شخصی شما ثبت شد."
-        else:
-            return f"⏭ سیگنال #{signal_number} از کارنامه شخصی شما رد شد."
+        if not trades:
+            return "هنوز هیچ معامله ثبت‌شده‌ای در تاریخچه وجود ندارد."
 
-    def get_daily_summary(self) -> str:
-        from datetime import datetime, timezone, timedelta
-        tz = timezone(timedelta(hours=3, minutes=30))
-        now = datetime.now(tz)
-        today_str = now.strftime("%Y-%m-%d")
+        total = len(trades)
+        wins = sum(1 for t in trades if t.get("outcome") in ["WIN", "PARTIAL_WIN_THEN_SL"])
+        losses = sum(1 for t in trades if t.get("outcome") == "LOSS")
+        be = sum(1 for t in trades if t.get("outcome") == "BREAK_EVEN_WIN")
+        rate = (wins / total * 100) if total > 0 else 0
+        total_gross = sum(t.get("realized_gross_pnl", 0.0) for t in trades)
+        total_fees = sum(t.get("total_fee", 0.0) for t in trades)
+        total_net = sum(t.get("realized_pnl_usd", 0.0) for t in trades)
 
-        today_trades = []
-        for t in self.trade_history:
-            t_time = datetime.fromtimestamp(t.get("closed_at", t.get("created_at", 0)), tz)
-            if t_time.strftime("%Y-%m-%d") == today_str:
-                today_trades.append(t)
+        lines = [
+            f"📊 <b>کارنامه و عملکرد کل ربات:</b>",
+            f"• کل معاملات: <b>{total}</b> | برد: <b>{wins} ✅</b> | باخت: <b>{losses} ❌</b> | ریسک‌فری: <b>{be}</b>",
+            f"• نرخ موفقیت کلی (Win Rate): <b>{rate:.0f}%</b>",
+            f"• سود ناخالص چارت: <code>{'+' if total_gross>=0 else ''}{total_gross:.2f}$</code>",
+            f"• کل کارمزد کسرشده صرافی: <code>-${total_fees:.2f}</code>",
+            f"• 💰 <b>سود/زیان خالص نهایی شما:</b> <code>{'+' if total_net>=0 else ''}{total_net:.2f}$</code> 🚀\n",
+            "━━━━━━━━━━━━━━━━━━━━\n<b>تفکیک عملکرد به ازای هر کانال:</b>"
+        ]
 
-        active_note = ""
-        if self.active_signal and not self.active_signal.get("is_closed"):
-            active_note = f"\n⚡️ <i>سیگنال #{self.active_signal['number']} هنوز باز است و در حال رصد می‌باشد.</i>\n"
+        # تفکیک بر اساس کانال‌ها
+        channel_names = set(t.get("source_channel", "lordxau") for t in trades)
+        for ch in sorted(channel_names):
+            ch_trades = [t for t in trades if t.get("source_channel", "lordxau") == ch]
+            ch_total = len(ch_trades)
+            ch_wins = sum(1 for t in ch_trades if t.get("outcome") in ["WIN", "PARTIAL_WIN_THEN_SL"])
+            ch_losses = sum(1 for t in ch_trades if t.get("outcome") == "LOSS")
+            ch_rate = (ch_wins / ch_total * 100) if ch_total > 0 else 0
+            ch_net = sum(t.get("realized_pnl_usd", 0.0) for t in ch_trades)
+            ch_title = ch_trades[0].get("channel_title", f"@{ch}")
 
-        if not today_trades and not self.active_signal:
-            return f"🌙 <b>گزارش پایان روز ({today_str}):</b>\n\nامروز هیچ سیگنالی بسته نشده است."
-
-        wins = sum(1 for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
-        losses = sum(1 for t in today_trades if t.get("outcome") == "LOSS")
-        total = wins + losses
-        win_rate = (wins / total * 100) if total > 0 else 0
-        
-        total_gross = sum(t.get("realized_gross_pnl", 0.0) for t in today_trades)
-        total_fees = sum(t.get("total_fee", 0.0) for t in today_trades)
-        total_net = sum(t.get("realized_pnl_usd", 0.0) for t in today_trades)
-        total_pips = sum(int(t.get("max_profit", 0.0) * 10) for t in today_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
-
-        my_trades = [t for t in today_trades if t.get("user_entered") is True]
-        my_wins = sum(1 for t in my_trades if t.get("outcome") in ["WIN", "BREAK_EVEN_WIN", "PARTIAL_WIN_THEN_SL"])
-        my_losses = sum(1 for t in my_trades if t.get("outcome") == "LOSS")
-        my_net = sum(t.get("realized_pnl_usd", 0.0) for t in my_trades)
-
-        gross_sign = "+" if total_gross >= 0 else ""
-        net_sign = "+" if total_net >= 0 else ""
-        my_sign = "+" if my_net >= 0 else ""
-
-        summary = (
-            f"🌙 <b>گزارش روزانه عملکرد سیگنال‌های طلا</b> 🌙\n"
-            f"📅 تاریخ: <code>{today_str}</code> | ساعت: <code>{now.strftime('%H:%M')}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📊 <b>آمار کل کانال امروز:</b>\n"
-            f"• تعداد سیگنال‌ها: <b>{len(today_trades)}</b>\n"
-            f"• بردها: <b>{wins} ✅</b> | باخت‌ها: <b>{losses} ❌</b>\n"
-            f"• نرخ موفقیت: <b>{win_rate:.0f}%</b> | مجموع پیپ: <b>+{total_pips} پیپ</b>\n"
-            f"• 📈 <b>جمع سود/زیان ناخالص:</b> <code>{gross_sign}${total_gross:.2f}</code>\n"
-            f"• 💸 <b>کل کارمزد صرافی:</b> <code>-${total_fees:.2f}</code>\n"
-            f"• 💰 <b>سود/زیان خالص نهایی کانال:</b> <code>{net_sign}${total_net:.2f}</code>\n\n"
-        )
-
-        if my_trades:
-            summary += (
-                f"👤 <b>کارنامه معاملات شخصی شما امروز:</b>\n"
-                f"• معاملات بازشده توسط شما: <b>{len(my_trades)}</b> (برد: {my_wins} | باخت: {my_losses})\n"
-                f"• 💰 <b>سود/زیان خالص حساب شما:</b> <code>{my_sign}${my_net:.2f}</code> 🚀\n\n"
+            lines.append(
+                f"\n📢 <b>{ch_title}:</b>\n"
+                f"• معاملات: <b>{ch_total}</b> (برد: <b>{ch_wins} ✅</b> | باخت: <b>{ch_losses} ❌</b>)\n"
+                f"• نرخ برد: <b>{ch_rate:.0f}%</b> | سود خالص: <code>{'+' if ch_net>=0 else ''}{ch_net:.2f}$</code>"
             )
 
-        summary += (
-            f"{active_note}"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💡 <i>مدیریت تنظیمات و سرمایه با دکمه</i> <code>⚙️ تنظیمات معامله</code>"
-        )
-        return summary
+        return "\n".join(lines)
+
+    def get_daily_summary(self) -> str:
+        return self.get_stats_summary()
+
+    def mark_user_participation(self, signal_number: int, entered: bool) -> str:
+        for sig in self.active_signals.values():
+            if sig.get("number") == signal_number:
+                sig["user_entered"] = entered
+                self._save_active_signals()
+                return f"✅ معامله #{signal_number} ثبت شد."
+        return "⚠️ معامله یافت نشد."
 
 evaluator = SignalEvaluator()

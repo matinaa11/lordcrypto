@@ -126,8 +126,8 @@ class GoldTracker:
 
             await asyncio.sleep(self.update_interval)
 
-    def get_price(self) -> float | None:
-        return self.current_price
+from price_fetcher import price_fetcher, PriceFetcher
 
-# نمونه سراسری
-gold_tracker = GoldTracker(update_interval=2.0)
+# ارجاع به رصدگر چند ارزی جدید
+gold_tracker = price_fetcher
+GoldTracker = PriceFetcher
