@@ -92,40 +92,101 @@ class PriceFetcher:
 
         return raw_price
 
-    # ════════════════════ قیمت کریپتو (Crypto Ticker) ════════════════════
+    # ════════════════════ قیمت کریپتو (Multi-Exchange Crypto Ticker) ════════════════════
 
-    def _fetch_crypto_binance(self, pair: str) -> Optional[float]:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={pair}"
+    def _extract_coin_name(self, pair: str) -> str:
+        s = pair.upper().replace("/", "").replace("-", "").strip()
+        if s.endswith("USDT"):
+            return s[:-4]
+        if s.endswith("USD"):
+            return s[:-3]
+        return s
+
+    def _fetch_mexc_futures(self, coin: str) -> Optional[float]:
+        url = f"https://contract.mexc.com/api/v1/contract/ticker?symbol={coin}_USDT"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            price = data.get("data", {}).get("lastPrice")
+            return float(price) if price else None
+
+    def _fetch_mexc_spot(self, coin: str) -> Optional[float]:
+        url = f"https://api.mexc.com/api/v3/ticker/price?symbol={coin}USDT"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             price = data.get("price")
             return float(price) if price else None
 
-    def _fetch_crypto_mexc(self, pair: str) -> Optional[float]:
-        url = f"https://api.mexc.com/api/v3/ticker/price?symbol={pair}"
+    def _fetch_bybit_linear(self, coin: str) -> Optional[float]:
+        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={coin}USDT"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            result_list = data.get("result", {}).get("list", [])
+            if result_list:
+                price = result_list[0].get("lastPrice")
+                return float(price) if price else None
+            return None
+
+    def _fetch_binance_futures(self, coin: str) -> Optional[float]:
+        url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={coin}USDT"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            price = data.get("price")
+            return float(price) if price else None
+
+    def _fetch_binance_spot(self, coin: str) -> Optional[float]:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={coin}USDT"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             price = data.get("price")
             return float(price) if price else None
 
     def _fetch_crypto(self, pair: str) -> Optional[float]:
-        # منبع اول: بایننس
-        try:
-            p = self._fetch_crypto_binance(pair)
-            if p and p > 0:
-                return p
-        except Exception as e:
-            logger.debug(f"Binance crypto {pair} error: {e}")
+        coin = self._extract_coin_name(pair)
 
-        # منبع دوم: مکسی (MEXC) برای کوین‌هایی که شاید در بایننس نباشند
+        # ۱. صرافی MEXC Futures (چون مارکت فیوچرز Ourbit دقیقاً نقدینگی و کوین‌های مشابه MEXC دارد)
         try:
-            p = self._fetch_crypto_mexc(pair)
+            p = self._fetch_mexc_futures(coin)
             if p and p > 0:
                 return p
         except Exception as e:
-            logger.debug(f"MEXC crypto {pair} error: {e}")
+            logger.debug(f"MEXC Futures {coin} error: {e}")
+
+        # ۲. صرافی MEXC Spot
+        try:
+            p = self._fetch_mexc_spot(coin)
+            if p and p > 0:
+                return p
+        except Exception as e:
+            logger.debug(f"MEXC Spot {coin} error: {e}")
+
+        # ۳. صرافی Bybit Linear Tickers
+        try:
+            p = self._fetch_bybit_linear(coin)
+            if p and p > 0:
+                return p
+        except Exception as e:
+            logger.debug(f"Bybit {coin} error: {e}")
+
+        # ۴. صرافی Binance Futures
+        try:
+            p = self._fetch_binance_futures(coin)
+            if p and p > 0:
+                return p
+        except Exception as e:
+            logger.debug(f"Binance Futures {coin} error: {e}")
+
+        # ۵. صرافی Binance Spot
+        try:
+            p = self._fetch_binance_spot(coin)
+            if p and p > 0:
+                return p
+        except Exception as e:
+            logger.debug(f"Binance Spot {coin} error: {e}")
 
         return None
 

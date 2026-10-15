@@ -24,6 +24,7 @@ class ParsedResult(tuple):
         obj.sl_pips = kwargs.get("sl_pips")
         obj.leverage = kwargs.get("leverage")
         obj.targets = kwargs.get("targets", [])
+        obj.tp_percentages = kwargs.get("tp_percentages", [])
         obj.tp1_price = kwargs.get("tp1_price")
         obj.tp1_pips = kwargs.get("tp1_pips")
         obj.tp2_price = kwargs.get("tp2_price")
@@ -206,75 +207,84 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
     crypto_dir_match = re.search(r'(?i)(?:🟠|🟢|🔴|🔵|✨|#|\b)([A-Z0-9]{2,10})\s*(?:/\s*USDT|\s*USDT)?\s*(SHORT|LONG|BUY|SELL|شورت|لانگ)\b', cleaned)
     crypto_pair_match = re.search(r'(?i)#?([A-Z0-9]{2,10})USDT\s*(?:[-:\s]*(LONG|SHORT|BUY|SELL|شورت|لانگ))?', cleaned)
 
-    is_crypto_entry = False
+    is_crypto_candidate = False
     crypto_coin = ""
     crypto_dir = ""
 
     if crypto_dir_match:
         matched_coin = crypto_dir_match.group(1).upper()
         if matched_coin not in ["GOLD", "XAU", "TP", "SL", "LV"]:
-            is_crypto_entry = True
+            is_crypto_candidate = True
             crypto_coin = matched_coin
             d_str = crypto_dir_match.group(2).upper()
             crypto_dir = "BUY" if d_str in ["LONG", "BUY", "لانگ"] else "SELL"
     elif crypto_pair_match and (re.search(r'(?i)\btp\b', cleaned) or re.search(r'(?i)\bsl\b', cleaned)):
         matched_coin = crypto_pair_match.group(1).upper()
         if matched_coin not in ["GOLD", "XAU"]:
-            is_crypto_entry = True
+            is_crypto_candidate = True
             crypto_coin = matched_coin
             d_str = (crypto_pair_match.group(2) or "").upper()
             crypto_dir = "BUY" if d_str in ["LONG", "BUY", "لانگ"] else "SELL"
 
-    if is_crypto_entry and ("tp" in lower or "sl" in lower or "market" in lower or "ورود" in lower or "entry" in lower):
+    # استخراج حد ضرر
+    c_sl_m = re.search(r'(?i)(?:sl|stop|استاپ)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)', cleaned)
+    crypto_sl = float(c_sl_m.group(1)) if c_sl_m else None
+
+    # قانون کلیدی: فقط پیامی که حد ضرر (SL) و (نحوه ورود یا تارگت) داشته باشد به عنوان باز کردن سیگنال ورود پردازش می‌شود.
+    has_market_or_tp = bool(re.search(r'(?i)\b(?:market|entry|ورود|tp|تارگت)\b', cleaned))
+    is_full_crypto_signal = is_crypto_candidate and (crypto_sl is not None) and has_market_or_tp
+
+    if is_full_crypto_signal:
+        base_coin = crypto_coin[:-4] if crypto_coin.endswith("USDT") else crypto_coin
         dir_badge = "🟢 LONG (خرید)" if crypto_dir == "BUY" else "🔴 SHORT (فروش)"
-        symbol_pair = f"{crypto_coin}USDT"
+        symbol_pair = f"{base_coin}USDT"
 
         # نحوه ورود (Market یا قیمت)
         entry_raw = "MARKET" if "market" in lower else ""
         if not entry_raw:
             c_entry_m = re.search(r'(?i)(?:entry|ورود)\s*[:=]?\s*([0-9\.\-\s/]+)', cleaned)
-            if c_entry_m:
-                entry_raw = c_entry_m.group(1).strip()
-            else:
-                entry_raw = "MARKET"
+            entry_raw = c_entry_m.group(1).strip() if c_entry_m else "MARKET"
 
-        # اهرم معامله
+        # اهرم معامله (در صورت نبودن، پیش‌فرض ۲۰ طبق درخواست کاربر)
         lev_m = re.search(r'(?i)(?:lv|leverage|لورج|اهرم)\s*[:=]?\s*(\d+)', cleaned)
-        leverage_val = int(lev_m.group(1)) if lev_m else None
+        leverage_val = int(lev_m.group(1)) if lev_m else 20
 
-        # حد ضرر
-        c_sl_m = re.search(r'(?i)(?:sl|stop|استاپ)\s*[:=]?\s*([0-9\.]+)', cleaned)
-        crypto_sl = float(c_sl_m.group(1)) if c_sl_m else None
+        # استخراج درصدهای اسپات تارگت‌ها (مانند 1%spot, 4%spot, 7%spot)
+        tp_spot_matches = re.findall(r'(?i)tp\s*\d*\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%\s*(?:spot)?', cleaned)
+        if tp_spot_matches:
+            tp_percentages = [float(x) for x in tp_spot_matches]
+        else:
+            tp_percentages = [1.0, 4.0, 7.0]
 
-        # تارگت‌ها
-        crypto_tps = re.findall(r'(?i)(?:tp\s*\d*|تارگت\s*\d*)\s*[:=]?\s*([^\n]+)', cleaned)
+        crypto_tps_raw = re.findall(r'(?i)(?:tp\s*\d*|تارگت\s*\d*)\s*[:=]?\s*([^\n]+)', cleaned)
 
-        # مدیریت ریسک
-        risk_m = re.search(r'(?i)(?:risk|ریسک)\s*[:=]?\s*(\d+%?(?:\s*\w+)?)', cleaned)
-        risk_val = risk_m.group(1) if risk_m else ""
+        # درصد ریسک کیف پول (پیش‌فرض ۵ درصد)
+        risk_m = re.search(r'(?i)(?:risk|ریسک)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%', cleaned)
+        risk_percent = float(risk_m.group(1)) if risk_m else 5.0
+        risk_val = f"{risk_percent:g}% wallet"
 
         lines = [
             f"{channel_header}⚡️ <b>سیگنال ورود جدید کریپتو ({symbol_pair})</b> ⚡️\n",
-            f"🔸 <b>ارز دیجیتال:</b> <code>{crypto_coin} / USDT</code>",
+            f"🔸 <b>ارز دیجیتال:</b> <code>{base_coin} / USDT</code>",
             f"🔸 <b>جهت پوزیشن:</b> {dir_badge}",
-            f"🔹 <b>نحوه ورود:</b> <code>{entry_raw}</code>"
+            f"🔹 <b>نحوه ورود:</b> <code>{entry_raw}</code>",
+            f"⚡️ <b>اهرم پیشنهادی:</b> <code>{leverage_val}x</code>"
         ]
-        if leverage_val:
-            lines.append(f"⚡️ <b>اهرم پیشنهادی:</b> <code>{leverage_val}x</code>")
-        if crypto_tps:
-            tp_str = " | ".join([f"TP{i+1}: {t.strip()}" for i, t in enumerate(crypto_tps[:4])])
+        if crypto_tps_raw:
+            tp_str = " | ".join([f"TP{i+1}: {t.strip()}" for i, t in enumerate(crypto_tps_raw[:4])])
             lines.append(f"🎯 <b>تارگت‌ها:</b> <code>{tp_str}</code>")
-        if crypto_sl:
-            lines.append(f"🛑 <b>حد ضرر (SL):</b> <code>{crypto_sl}</code>")
-        if risk_val:
-            lines.append(f"💰 <b>مدیریت سرمایه:</b> <code>{risk_val}</code>")
+        elif tp_percentages:
+            tp_str = " | ".join([f"TP{i+1}: {p:g}% Spot" for i, p in enumerate(tp_percentages[:3])])
+            lines.append(f"🎯 <b>تارگت‌ها:</b> <code>{tp_str}</code>")
 
+        lines.append(f"🛑 <b>حد ضرر (SL):</b> <code>{crypto_sl}</code>")
+        lines.append(f"💰 <b>مدیریت ریسک:</b> <code>{risk_val}</code>")
         lines.append(f"\n📝 <b>متن اصلی سیگنال:</b>\n<code>{cleaned}</code>")
         msg = "\n".join(lines)
 
         return ParsedResult(
             "SIGNAL_ENTRY",
-            f"سیگنال {crypto_coin} {dir_badge}",
+            f"سیگنال {base_coin} {dir_badge}",
             msg,
             True,
             symbol=symbol_pair,
@@ -283,28 +293,50 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
             entry_raw=entry_raw,
             stop_loss=crypto_sl,
             leverage=leverage_val,
-            targets=crypto_tps,
-            risk_percent=risk_val,
+            tp_percentages=tp_percentages,
+            targets=crypto_tps_raw,
+            risk_percent=risk_percent,
             channel_title=channel_title,
             channel_username=channel_name
         )
 
     # ════════════════════ ۳. هشدارهای اقدام سریع (مانند ALLO لانگ کنید / DUSK شورت کنید) ════════════════════
-    quick_m = re.search(r'(?i)\b([A-Z0-9]{2,10})\b\s*(?:/\s*USDT)?\s*(?:استارت|\n)*\s*(لانگ|شورت|خرید|فروش)\s*کنید', cleaned)
+    quick_m = re.search(r'(?i)\b([A-Z0-9]{2,10})\b[^\n]*\n*.*?(لانگ|شورت|خرید|فروش)\s*کنید', cleaned)
+    quick_coin = None
+    quick_dir = None
+
     if quick_m and quick_m.group(1).upper() not in ["GOLD", "XAU"]:
-        coin = quick_m.group(1).upper()
-        dir_clean = "BUY" if quick_m.group(2) in ["لانگ", "خرید"] else "SELL"
-        lev_m = re.search(r'(?:لورج|اهرم|lv)\s*(\d+)', cleaned, re.I)
-        lev = int(lev_m.group(1)) if lev_m else None
-        dir_badge = "🟢 خرید (LONG)" if dir_clean == "BUY" else "🔴 فروش (SHORT)"
-        lev_note = f" (اهرم: <code>{lev}x</code>)" if lev else ""
+        quick_coin = quick_m.group(1).upper()
+        quick_dir = "BUY" if quick_m.group(2) in ["لانگ", "خرید"] else "SELL"
+    elif is_crypto_candidate and not is_full_crypto_signal:
+        quick_coin = crypto_coin
+        quick_dir = crypto_dir
+
+    if quick_coin:
+        base_quick = quick_coin[:-4] if quick_coin.endswith("USDT") else quick_coin
+        lev_m = re.search(r'(?:لورج|اهرم|lv)\s*[:=]?\s*(\d+)', cleaned, re.I)
+        lev = int(lev_m.group(1)) if lev_m else 20
+        dir_badge = "🟢 خرید (LONG)" if quick_dir == "BUY" else "🔴 فروش (SHORT)"
+        lev_note = f" (اهرم: <code>{lev}x</code>)"
 
         msg = (
-            f"{channel_header}⚡️ <b>هشدار اقدام فوری کریپتو ({coin}/USDT)</b> ⚡️\n\n"
-            f"🔸 <b>جهت:</b> {dir_badge}{lev_note}\n\n"
+            f"{channel_header}⚡️ <b>هشدار اقدام فوری و آماده‌باش ({base_quick}/USDT)</b> ⚡️\n\n"
+            f"🔸 <b>جهت:</b> {dir_badge}{lev_note}\n"
+            f"⏳ <i>سیگنال کامل با حد ضرر و تارگت‌ها به زودی ارسال می‌شود...</i>\n\n"
             f"📝 <i>متن ادمین:</i> <code>{cleaned}</code>"
         )
-        return ParsedResult("ACTION_QUICK_SIGNAL", f"هشدار فوری {coin}", msg, True, symbol=f"{coin}USDT", direction=dir_clean, leverage=lev, channel_title=channel_title)
+        return ParsedResult(
+            "ACTION_QUICK_SIGNAL", 
+            f"هشدار فوری {base_quick}", 
+            msg, 
+            True, 
+            symbol=f"{base_quick}USDT", 
+            market_type="CRYPTO",
+            direction=quick_dir, 
+            leverage=lev, 
+            channel_title=channel_title,
+            channel_username=channel_name
+        )
 
     if re.search(r'بای\s*(?:بزنید|بگیرید|کنید)', cleaned) or lower == "buy":
         msg = f"{channel_header}🟢 <b>هشدار خرید فوری (BUY)</b> 🟢\n\n<i>متن ادمین:</i> <code>{cleaned}</code>"

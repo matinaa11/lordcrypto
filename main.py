@@ -24,7 +24,7 @@ from notifier import (
     edit_message_reply_markup
 )
 from price_fetcher import price_fetcher, gold_tracker
-from evaluator import evaluator
+from evaluator import evaluator, format_price
 from channel_listener import MultiChannelListener, WebChannelListener
 
 logging.basicConfig(
@@ -563,6 +563,7 @@ async def handle_channel_message(msg_id: int, raw_text: str, channel_name: str =
         return
 
     symbol = getattr(parsed, "symbol", "XAUUSD")
+    market_type = getattr(parsed, "market_type", "GOLD")
     current_price = price_fetcher.get_price(symbol)
     extra_analysis = ""
     outcome_report = None
@@ -571,27 +572,111 @@ async def handle_channel_message(msg_id: int, raw_text: str, channel_name: str =
     if cat == "SIGNAL_ENTRY":
         dir_clean = getattr(parsed, "direction", "BUY")
         enter_raw = getattr(parsed, "entry_raw", "")
+        leverage = getattr(parsed, "leverage", 20 if market_type == "CRYPTO" else 100)
+        parsed_sl = getattr(parsed, "stop_loss", None)
+        tp_percentages = getattr(parsed, "tp_percentages", [1.0, 4.0, 7.0] if market_type == "CRYPTO" else [])
+        risk_percent = getattr(parsed, "risk_percent", 5.0)
 
-        # ثبت معامله منحصراً برای همین کانال (ایزولاسیون کامل)
+        entry_price = current_price if current_price else 0.0
+        tp1_price = getattr(parsed, "tp1_price", None)
+        tp2_price = getattr(parsed, "tp2_price", None)
+        tp3_price = None
+
+        if market_type == "CRYPTO":
+            # ۱. محاسبه خودکار تارگت‌ها بر اساس درصد اسپات و قیمت ورود مارکت
+            if entry_price > 0 and tp_percentages:
+                if dir_clean == "BUY": # LONG
+                    tp1_price = round(entry_price * (1.0 + tp_percentages[0] / 100.0), 6)
+                    tp2_price = round(entry_price * (1.0 + tp_percentages[1] / 100.0), 6) if len(tp_percentages) > 1 else None
+                    tp3_price = round(entry_price * (1.0 + tp_percentages[2] / 100.0), 6) if len(tp_percentages) > 2 else None
+                else: # SELL / SHORT
+                    tp1_price = round(entry_price * (1.0 - tp_percentages[0] / 100.0), 6)
+                    tp2_price = round(entry_price * (1.0 - tp_percentages[1] / 100.0), 6) if len(tp_percentages) > 1 else None
+                    tp3_price = round(entry_price * (1.0 - tp_percentages[2] / 100.0), 6) if len(tp_percentages) > 2 else None
+
+            # ۲. بررسی امنیتی منطقی (Security Check)
+            # برای SHORT باید entry_price < stop_loss
+            # برای LONG باید entry_price > stop_loss
+            security_warning = ""
+            if parsed_sl and entry_price > 0:
+                if dir_clean == "SELL" and entry_price >= parsed_sl:
+                    security_warning = f"\n⚠️ <b>هشدار امنیتی ورود:</b> قیمت مارکت ({format_price(entry_price)}) از حد ضرر ({format_price(parsed_sl)}) فراتر رفته است! ورود پرریسک است."
+                elif dir_clean == "BUY" and entry_price <= parsed_sl:
+                    security_warning = f"\n⚠️ <b>هشدار امنیتی ورود:</b> قیمت مارکت ({format_price(entry_price)}) از حد ضرر ({format_price(parsed_sl)}) پایین‌تر است! ورود پرریسک است."
+
+            # ۳. محاسبات مالی با احتساب لوریج و کارمزد
+            budget = evaluator.trade_budget
+            fee_rate = float(evaluator.settings.get("fee_rate", 0.04))
+            pos_val = budget * leverage
+            total_fee = round(pos_val * (fee_rate / 100.0) * 2, 2)
+
+            # محاسبه فاصله استاپ لاس به درصد
+            sl_info_str = ""
+            if parsed_sl and entry_price > 0:
+                sl_dist_pct = abs(entry_price - parsed_sl) / entry_price * 100.0
+                sl_lev_loss_pct = sl_dist_pct * leverage
+                sl_dollar_loss = min(budget, (pos_val * (sl_dist_pct / 100.0)) + total_fee)
+                sl_info_str = f"🛑 <b>حد ضرر (SL):</b> <code>{format_price(parsed_sl)}</code> (فاصله: <b>{sl_dist_pct:.2f}%</b> | زیان: <b>-{sl_lev_loss_pct:.1f}%</b> | <code>-${sl_dollar_loss:.2f}</code>)"
+            elif parsed_sl:
+                sl_info_str = f"🛑 <b>حد ضرر (SL):</b> <code>{format_price(parsed_sl)}</code>"
+
+            tp_lines = []
+            for i, pct in enumerate(tp_percentages[:3]):
+                tp_p = [tp1_price, tp2_price, tp3_price][i] if i < 3 else None
+                lev_gain_pct = pct * leverage
+                dollar_gain = max(0.0, (pos_val * (pct / 100.0)) - total_fee)
+                p_str = format_price(tp_p) if tp_p else f"+{pct}% Spot"
+                tp_lines.append(f"• <b>TP {i+1} (+{pct:g}% Spot):</b> <code>{p_str}</code> (سود لوریج: <b>+{lev_gain_pct:.0f}%</b> | خالص: <code>+{dollar_gain:.2f}$</code>)")
+
+            dir_badge = "🟢 LONG (خرید)" if dir_clean == "BUY" else "🔴 SHORT (فروش)"
+            coin_clean = symbol.replace("USDT", "")
+
+            formatted_html = (
+                f"📢 <b>کانال:</b> {channel_title}\n\n"
+                f"⚡️ <b>سیگنال ورود جدید کریپتو ({symbol})</b> ⚡️\n\n"
+                f"🔸 <b>ارز دیجیتال:</b> <code>{coin_clean} / USDT</code>\n"
+                f"🔸 <b>جهت پوزیشن:</b> {dir_badge}\n"
+                f"🔹 <b>نحوه ورود:</b> <code>MARKET</code> (~{format_price(entry_price)})\n"
+                f"⚡️ <b>اهرم (Leverage):</b> <code>{leverage}x</code>\n"
+                f"💰 <b>مدیریت ریسک:</b> <code>{risk_percent:g}% کیف پول</code>\n\n"
+                f"🎯 <b>تارگت‌های محاسبه‌شده (Spot):</b>\n" + "\n".join(tp_lines) + "\n\n"
+                f"{sl_info_str}{security_warning}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📊 <b>محاسبات مالی فیوچرز:</b>\n"
+                f"💵 <b>سرمایه مارجین:</b> <code>${budget:.2f}</code> | <b>ارزش معامله:</b> <code>${pos_val:.2f}</code>\n"
+                f"💸 <b>کارمزد رفت‌وبرگشت ({fee_rate}%):</b> <code>-${total_fee:.2f}</code>\n\n"
+                f"📝 <b>متن اصلی سیگنال:</b>\n<code>{raw_text.strip()}</code>"
+            )
+
+        # ثبت معامله در ارزیاب
         sig_num, analysis = evaluator.register_entry(
             direction=dir_clean,
             entry_raw=enter_raw,
-            current_price=current_price,
+            current_price=entry_price,
             source_channel=channel_name,
             channel_title=channel_title,
-            symbol=symbol
+            symbol=symbol,
+            stop_loss=parsed_sl,
+            tp1_price=tp1_price,
+            tp2_price=tp2_price,
+            tp3_price=tp3_price,
+            leverage=leverage,
+            market_type=market_type,
+            risk_percent=risk_percent
         )
 
-        parsed_sl = getattr(parsed, "stop_loss", None)
-        if parsed_sl:
-            sl_analysis, sl_outcome = evaluator.register_stop(str(parsed_sl), current_price, source_channel=channel_name)
-            if sl_analysis:
-                analysis = sl_analysis
-            if sl_outcome:
-                outcome_report = sl_outcome
+        if market_type == "GOLD":
+            parsed_sl = getattr(parsed, "stop_loss", None)
+            if parsed_sl:
+                sl_analysis, sl_outcome = evaluator.register_stop(str(parsed_sl), current_price, source_channel=channel_name)
+                if sl_analysis:
+                    analysis = sl_analysis
+                if sl_outcome:
+                    outcome_report = sl_outcome
 
-        price_note = f"${current_price:.2f}" if current_price else "در حال بارگذاری..."
-        extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل وضعیت ورود:</b>\n{analysis}\n💵 <i>قیمت لحظه‌ای {symbol}: {price_note}</i>"
+            price_note = f"${current_price:.2f}" if current_price else "در حال بارگذاری..."
+            extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل وضعیت ورود:</b>\n{analysis}\n💵 <i>قیمت لحظه‌ای {symbol}: {price_note}</i>"
+
         reply_markup = get_signal_action_keyboard(sig_num)
 
     elif cat == "SIGNAL_STOP":
@@ -648,7 +733,7 @@ async def handle_channel_edited_message(msg_id: int, raw_text: str, channel_name
 
         symbol = getattr(parsed, "symbol", "XAUUSD")
         current_price = price_fetcher.get_price(symbol)
-        price_note = f"\n\n💵 <b>قیمت فعلی {symbol}:</b> <code>${current_price:.2f}</code>" if current_price else ""
+        price_note = f"\n\n💵 <b>قیمت فعلی {symbol}:</b> <code>{format_price(current_price)}</code>" if current_price else ""
         edit_notice = f"⚠️ <b>(پیام ویرایش شد)</b>\n\n" + formatted_html + price_note
         await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, edit_notice)
 
