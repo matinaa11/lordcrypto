@@ -185,6 +185,7 @@ class SignalEvaluator:
             f"⚡️ <b>اهرم فیوچرز (Ourbit):</b> <code>{int(s.get('leverage', 100))}x</code>\n"
             f"📊 <b>حجم معامله (Forex MT5):</b> <code>{float(s.get('lot_size', 0.01))} Lot</code>\n"
             f"💸 <b>نرخ کارمزد صرافی:</b> <code>{float(s.get('fee_rate', 0.04)):.2f}%</code> ({s.get('order_type', 'MARKET')})\n"
+            f"🪙 <b>قرارداد طلا در Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n"
         )
 
     # ════════════════════ محاسبات دقیق سود و کارمزد ════════════════════
@@ -360,8 +361,8 @@ class SignalEvaluator:
         entry_raw: str, 
         current_price: Optional[float],
         source_channel: str = "lordxau",
-        channel_title: str = "LORD XAU (طلا)",
-        symbol: str = "XAUUSD",
+        channel_title: str = "LORD XAU (XAUT/USDT)",
+        symbol: str = "XAUTUSDT",
         stop_loss: Optional[float] = None,
         tp1_price: Optional[float] = None,
         tp2_price: Optional[float] = None,
@@ -387,7 +388,7 @@ class SignalEvaluator:
         dir_clean = "BUY" if ("buy" in direction.lower() or "long" in direction.lower() or "بای" in direction.lower()) else "SELL"
 
         # محاسبه ورود و حد ضرر پیش‌فرض
-        if symbol == "XAUUSD" or market_type == "GOLD":
+        if symbol in ["XAUUSD", "XAUTUSDT"] or market_type == "GOLD":
             entry_min, entry_max = self._parse_entry_range(entry_raw, current_price)
             mid_entry = (entry_min + entry_max) / 2 if (entry_min and entry_max) else (current_price or 0.0)
             default_sl = stop_loss if stop_loss else (round(mid_entry - 3.0, 2) if dir_clean == "BUY" else round(mid_entry + 3.0, 2))
@@ -459,7 +460,7 @@ class SignalEvaluator:
             return "", None
 
         # اگر استاپ پیپ‌محور باشد و نماد طلا باشد
-        if sl < 500 and sig.get("symbol") == "XAUUSD":
+        if sl < 500 and (sig.get("symbol") in ["XAUUSD", "XAUTUSDT"] or sig.get("market_type") == "GOLD"):
             d = sig["direction"]
             entry = sig["entry_price"]
             sl = round(entry + (sl / 10.0), 2) if d == "SELL" else round(entry - (sl / 10.0), 2)
@@ -583,7 +584,7 @@ class SignalEvaluator:
 
         elif outcome == "LOSS":
             sl = sig.get("stop_loss")
-            sl_dist = abs(entry - sl) if sl else (3.0 if sig.get("symbol") == "XAUUSD" else entry * 0.03)
+            sl_dist = abs(entry - sl) if sl else (3.0 if sig.get("symbol") in ["XAUUSD", "XAUTUSDT"] else entry * 0.03)
             m = self.calculate_trade_metrics(entry, -sl_dist, sig_settings, custom_leverage=sig_lev)
             gross_pnl = m["gross_pnl"]
             total_fee = m["total_fee"]
@@ -617,7 +618,8 @@ class SignalEvaluator:
         sig_num = sig.get("number", 1)
         outcome = sig["outcome"]
         ch_title = sig.get("channel_title", f"@{sig.get('source_channel', 'lordxau')}")
-        symbol = sig.get("symbol", "XAUUSD")
+        symbol = sig.get("symbol", "XAUTUSDT")
+        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
         
         s = sig.get("settings", self.settings)
         mode = s.get("mode", "OURBIT_FUTURES")
@@ -632,7 +634,7 @@ class SignalEvaluator:
         header_banner = f"📢 <b>کانال:</b> {ch_title}\n"
 
         if outcome == "WIN":
-            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): درست درآمد (WIN) ✅</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({sym_display}): درست درآمد (WIN) ✅</b>"
             badge = "🟢 <b>موفق (سودده)</b>"
             pnl_details = (
                 f"📈 <b>سود ناخالص:</b> <code>+{gross_pnl:.2f}$</code>\n"
@@ -640,7 +642,7 @@ class SignalEvaluator:
                 f"💰 <b>سود خالص دریافتی شما:</b> <code>+{net_pnl:.2f}$</code> (<b>+{net_pct:.0f}%</b>) 🚀"
             )
         elif outcome == "PARTIAL_WIN_THEN_SL":
-            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): تارگت محقق شده (سپس استاپ) ✅</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({sym_display}): تارگت محقق شده (سپس استاپ) ✅</b>"
             badge = "🟡 <b>تارگت اول زده شد (Partial Win)</b>"
             pnl_details = (
                 f"📈 <b>سود ناخالص تارگت:</b> <code>+{gross_pnl:.2f}$</code>\n"
@@ -649,14 +651,14 @@ class SignalEvaluator:
                 f"⚠️ <i>معامله ابتدا به تارگت رسید و سود ثبت کرد، سپس با بازگشت بازار استاپ خورد.</i>"
             )
         elif outcome == "BREAK_EVEN_WIN":
-            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): خروج سر‌به‌سر (Risk-Free)</b>"
+            header = f"{header_banner}🏆 <b>نتیجه نهایی سیگنال #{sig_num} ({sym_display}): خروج سر‌به‌سر (Risk-Free)</b>"
             badge = "🟡 <b>ریسک‌فری (بدون سود چارت)</b>"
             pnl_details = (
                 f"🟡 <b>بسته شدن در نقطه ورود:</b> سود چارت <code>$0.00</code> | کارمزد: <code>-${total_fee:.2f}</code>\n"
                 f"💸 <b>تغییر خالص موجودی:</b> <code>-${total_fee:.2f}</code> (کسر کارمزد رفت‌وبرگشت)"
             )
         elif outcome == "LOSS":
-            header = f"{header_banner}🚨 <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): اشتباه درآمد (LOSS) ❌</b>"
+            header = f"{header_banner}🚨 <b>نتیجه نهایی سیگنال #{sig_num} ({sym_display}): اشتباه درآمد (LOSS) ❌</b>"
             badge = "🔴 <b>ناموفق (استاپ خورد)</b>"
             pnl_details = (
                 f"📉 <b>ضرر ناخالص استاپ:</b> <code>-${abs(gross_pnl):.2f}</code>\n"
@@ -664,15 +666,18 @@ class SignalEvaluator:
                 f"💸 <b>مجموع زیان خالص این معامله:</b> <code>-${abs(net_pnl):.2f}</code>"
             )
         else:
-            header = f"{header_banner}⚪️ <b>نتیجه نهایی سیگنال #{sig_num} ({symbol}): پایان معامله</b>"
+            header = f"{header_banner}⚪️ <b>نتیجه نهایی سیگنال #{sig_num} ({sym_display}): پایان معامله</b>"
             badge = "⚪️ <b>منقضی / نامشخص</b>"
             pnl_details = f"علت خروج: {sig.get('outcome_reason', 'پایان زمان')}"
+
+        ourbit_line = f"🪙 <b>قرارداد Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n" if symbol in ["XAUUSD", "XAUTUSDT"] else ""
 
         return (
             f"{header}\n\n"
             f"🔸 <b>وضعیت:</b> {badge}\n"
             f"🔹 <b>جهت:</b> {sig['direction']} | <b>نقطه ورود:</b> <code>{format_price(sig['entry_price'])}</code>\n"
-            f"🔹 <b>خروج در:</b> <code>{format_price(sig.get('exit_price', sig['entry_price']))}</code>\n\n"
+            f"🔹 <b>خروج در:</b> <code>{format_price(sig.get('exit_price', sig['entry_price']))}</code>\n"
+            f"{ourbit_line}\n"
             f"{pnl_details}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{self.get_stats_summary()}"
@@ -687,7 +692,8 @@ class SignalEvaluator:
         direction = sig["direction"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
-        symbol = sig.get("symbol", "XAUUSD")
+        symbol = sig.get("symbol", "XAUTUSDT")
+        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
         s = sig.get("settings", self.settings)
         lev = sig.get("leverage")
 
@@ -695,20 +701,24 @@ class SignalEvaluator:
         if tp1_p and entry > 0:
             tp_diff = abs(tp1_p - entry)
         else:
-            tp_diff = 2.0 if symbol == "XAUUSD" else (entry * 0.01)
+            tp_diff = 2.0 if symbol in ["XAUUSD", "XAUTUSDT"] else (entry * 0.01)
 
         m_tp1 = self.calculate_trade_metrics(entry, tp_diff, s, custom_leverage=lev)
-        sl_dist = abs(entry - sl) if sl else (3.0 if symbol == "XAUUSD" else entry * 0.03)
+        sl_dist = abs(entry - sl) if sl else (3.0 if symbol in ["XAUUSD", "XAUTUSDT"] else entry * 0.03)
         m_sl = self.calculate_trade_metrics(entry, -sl_dist, s, custom_leverage=lev)
 
         status_lines = [
             f"📢 <b>کانال:</b> {sig.get('channel_title', clean_ch)}",
-            f"📊 <b>نماد:</b> <code>{symbol}</code> | <b>جهت:</b> <b>{direction}</b> | <b>نقطه ورود:</b> <code>{format_price(entry)}</code>",
+            f"📊 <b>نماد:</b> <code>{sym_display}</code> | <b>جهت:</b> <b>{direction}</b> | <b>نقطه ورود:</b> <code>{format_price(entry)}</code>",
+        ]
+        if symbol in ["XAUUSD", "XAUTUSDT"]:
+            status_lines.append("🪙 <b>قرارداد Ourbit:</b> <code>GOLD(XAUT)USDT</code>")
+        status_lines.extend([
             f"🛑 <b>حد ضرر:</b> <code>{format_price(sl)}</code>" if sl else "🛑 <b>حد ضرر:</b> مشخص نشده",
             f"💰 <b>پیش‌بینی سود و زیان (اهرم {lev or 100}x):</b>",
             f"• تارگت اول: خالص <b><code>+{m_tp1['net_pnl']:.2f}$</code></b> (+{m_tp1['net_pct']:.0f}%)",
             f"• در صورت استاپ: خالص با کارمزد <b><code>-${abs(m_sl['net_pnl']):.2f}</code></b>"
-        ]
+        ])
         return "\n".join(status_lines)
 
     # ════════════════════ بررسی زنده وضعیت برای همه کانال‌ها ════════════════════
@@ -722,7 +732,7 @@ class SignalEvaluator:
             if not sig or sig.get("is_closed"):
                 continue
 
-            symbol = sig.get("symbol", "XAUUSD")
+            symbol = sig.get("symbol", "XAUTUSDT")
             if callable(get_price_func_or_price):
                 cur_price = get_price_func_or_price(symbol)
             elif isinstance(get_price_func_or_price, (int, float)):
@@ -746,7 +756,8 @@ class SignalEvaluator:
         e_max = sig["entry_max"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
-        symbol = sig.get("symbol", "XAUUSD")
+        symbol = sig.get("symbol", "XAUTUSDT")
+        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
         ch_title = sig.get("channel_title", f"@{source_channel}")
         s = sig.get("settings", self.settings)
         lev = sig.get("leverage")
@@ -768,7 +779,7 @@ class SignalEvaluator:
         if tp1:
             is_tp_hit = (direction == "BUY" and current_price >= tp1) or (direction == "SELL" and current_price <= tp1)
         else:
-            threshold = 2.0 if symbol == "XAUUSD" else (entry * 0.01)
+            threshold = 2.0 if symbol in ["XAUUSD", "XAUTUSDT"] else (entry * 0.01)
             is_tp_hit = (cur_profit >= threshold)
 
         if is_tp_hit and not sig.get("target_hit"):
@@ -781,7 +792,7 @@ class SignalEvaluator:
 
             return (
                 f"📢 <b>کانال:</b> {ch_title}\n"
-                f"🎯 <b>تارگت اول سیگنال #{sig_num} ({symbol}) محقق شد!</b>\n\n"
+                f"🎯 <b>تارگت اول سیگنال #{sig_num} ({sym_display}) محقق شد!</b>\n\n"
                 f"قیمت لحظه‌ای: <code>{format_price(current_price)}</code>\n"
                 f"📈 <b>سود ناخالص:</b> <code>+{m_cur['gross_pnl']:.2f}$</code> | 💸 <b>کارمزد صرافی:</b> <code>-${m_cur['total_fee']:.2f}</code>\n"
                 f"💰 <b>سود خالص دریافتی شما:</b> <code>{net_sign}${m_cur['net_pnl']:.2f}</code> (<b>+{m_cur['net_pct']:.0f}%</b>) 🚀\n\n"
@@ -806,12 +817,12 @@ class SignalEvaluator:
                     return self.close_trade("LOSS", f"قیمت به {format_price(current_price)} رسید و حد ضرر ({format_price(sl)}) لمس شد.", current_price, source_channel=source_channel)
 
         # ۴. ورود به محدوده (تنها برای طلا که زون دارد)
-        if symbol == "XAUUSD" and not sig["entered_zone_alerted"] and (e_min <= current_price <= e_max):
+        if symbol in ["XAUUSD", "XAUTUSDT"] and not sig["entered_zone_alerted"] and (e_min <= current_price <= e_max):
             sig["entered_zone_alerted"] = True
             self._save_active_signals()
             return (
                 f"📢 <b>کانال:</b> {ch_title}\n"
-                f"🎯 <b>سیگنال #{sig_num} ({symbol}): وارد زون ورود شد!</b>\n\n"
+                f"🎯 <b>سیگنال #{sig_num} ({sym_display}): وارد زون ورود شد!</b>\n\n"
                 f"جهت: <b>{direction}</b> | قیمت: <code>{format_price(current_price)}</code>\n"
                 f"محدوده ورود: <code>{sig['entry_raw']}</code>"
             )

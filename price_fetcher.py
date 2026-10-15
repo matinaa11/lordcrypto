@@ -14,75 +14,158 @@ class PriceFetcher:
         self.last_update_times: Dict[str, float] = {}
         self.is_running = False
         self._consecutive_spikes = 0
-        self.monitored_symbols = set(["XAUUSD"])
+        self.monitored_symbols = set(["XAUTUSDT"])
 
     def _normalize_symbol(self, raw_symbol: str) -> str:
         s = raw_symbol.upper().replace("/", "").replace("-", "").strip()
-        if s in ["XAU", "GOLD", "XAUUSD", "طلا"]:
-            return "XAUUSD"
+        if s in ["XAU", "GOLD", "XAUUSD", "طلا", "XAUT", "XAUTUSDT", "GOLD(XAUT)USDT"]:
+            return "XAUTUSDT"
         if not s.endswith("USDT") and not s.endswith("USD"):
             s = f"{s}USDT"
         return s
 
-    # ════════════════════ قیمت انس طلا (Gold Spot) ════════════════════
+    # ════════════════════ قیمت طلا (XAUT / Tether Gold) ════════════════════
 
-    def _fetch_from_gold_api(self) -> Optional[float]:
-        url = "https://api.gold-api.com/price/XAU"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            price = data.get("price")
-            return float(price) if price else None
+    def _fetch_xaut_mexc(self) -> Optional[float]:
+        # اولویت ۱-الف: MEXC Spot GOLD(XAUT)USDT
+        try:
+            url = "https://api.mexc.com/api/v3/ticker/price?symbol=GOLD(XAUT)USDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                p = data.get("price")
+                if p and float(p) > 1000:
+                    return float(p)
+        except Exception as e:
+            logger.debug(f"MEXC Spot GOLD(XAUT) error: {e}")
+
+        # اولویت ۱-ب: MEXC Futures XAUT_USDT
+        try:
+            url = "https://contract.mexc.com/api/v1/contract/ticker?symbol=XAUT_USDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                p = data.get("data", {}).get("lastPrice")
+                if p and float(p) > 1000:
+                    return float(p)
+        except Exception as e:
+            logger.debug(f"MEXC Futures XAUT error: {e}")
+
+        # اولویت ۱-ج: MEXC Spot XAUTUSDT
+        try:
+            url = "https://api.mexc.com/api/v3/ticker/price?symbol=XAUTUSDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                p = data.get("price")
+                if p and float(p) > 1000:
+                    return float(p)
+        except Exception as e:
+            logger.debug(f"MEXC Spot XAUT error: {e}")
+
+        return None
+
+    def _fetch_xaut_bybit(self) -> Optional[float]:
+        # اولویت ۲: Bybit Spot
+        try:
+            url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=XAUTUSDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                res_list = data.get("result", {}).get("list", [])
+                if res_list:
+                    p = res_list[0].get("lastPrice")
+                    if p and float(p) > 1000:
+                        return float(p)
+        except Exception as e:
+            logger.debug(f"Bybit Spot XAUT error: {e}")
+
+        # Bybit Linear
+        try:
+            url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=XAUTUSDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                res_list = data.get("result", {}).get("list", [])
+                if res_list:
+                    p = res_list[0].get("lastPrice")
+                    if p and float(p) > 1000:
+                        return float(p)
+        except Exception as e:
+            logger.debug(f"Bybit Linear XAUT error: {e}")
+
+        return None
+
+    def _fetch_xaut_binance(self) -> Optional[float]:
+        # اولویت ۳: Binance Spot
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price?symbol=XAUTUSDT"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                p = data.get("price")
+                if p and float(p) > 1000:
+                    return float(p)
+        except Exception as e:
+            logger.debug(f"Binance Spot XAUT error: {e}")
+
+        return None
 
     def _fetch_from_binance_paxg(self) -> Optional[float]:
         url = "https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             price = data.get("price")
             return float(price) if price else None
 
-    def _fetch_from_yahoo(self) -> Optional[float]:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
+    def _fetch_from_gold_api(self) -> Optional[float]:
+        url = "https://api.gold-api.com/price/XAU"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            price = data["chart"]["result"][0]["meta"].get("regularMarketPrice")
+            price = data.get("price")
             return float(price) if price else None
 
-    def _fetch_gold_spot(self) -> Optional[float]:
+    def _fetch_gold_price(self) -> Optional[float]:
         raw_price = None
-        try:
-            p = self._fetch_from_gold_api()
-            if p and p > 1000:
-                raw_price = p
-        except Exception as e:
-            logger.debug(f"gold-api error: {e}")
 
+        # اولویت ۱: MEXC Spot / Futures
+        raw_price = self._fetch_xaut_mexc()
+
+        # اولویت ۲: Bybit Spot / Linear
+        if not raw_price:
+            raw_price = self._fetch_xaut_bybit()
+
+        # اولویت ۳: Binance Spot
+        if not raw_price:
+            raw_price = self._fetch_xaut_binance()
+
+        # بک‌آپ پشتیبان (PAXG / Gold API)
         if not raw_price:
             try:
                 p = self._fetch_from_binance_paxg()
                 if p and p > 1000:
                     raw_price = p
-            except Exception as e:
-                logger.debug(f"binance paxg error: {e}")
+            except Exception:
+                pass
 
         if not raw_price:
             try:
-                p = self._fetch_from_yahoo()
+                p = self._fetch_from_gold_api()
                 if p and p > 1000:
                     raw_price = p
-            except Exception as e:
-                logger.debug(f"yahoo error: {e}")
+            except Exception:
+                pass
 
         if not raw_price:
             return None
 
         # فیلتر جهش غیرعادی طلا
-        cur_gold = self.price_cache.get("XAUUSD")
+        cur_gold = self.price_cache.get("XAUTUSDT") or self.price_cache.get("XAUUSD")
         if cur_gold is not None:
             diff = abs(raw_price - cur_gold)
-            if diff > 6.0:
+            if diff > 10.0:
                 self._consecutive_spikes += 1
                 if self._consecutive_spikes < 3:
                     logger.warning(f"جهش مشکوک طلا {raw_price} نسبت به {cur_gold} رد شد.")
@@ -192,7 +275,7 @@ class PriceFetcher:
 
     # ════════════════════ دریافت قیمت عمومی ════════════════════
 
-    def fetch_price_sync(self, symbol: str = "XAUUSD") -> Optional[float]:
+    def fetch_price_sync(self, symbol: str = "XAUTUSDT") -> Optional[float]:
         norm = self._normalize_symbol(symbol)
         now = time.time()
 
@@ -200,25 +283,31 @@ class PriceFetcher:
         if norm in self.price_cache and (now - self.last_update_times.get(norm, 0) < 1.5):
             return self.price_cache[norm]
 
-        if norm == "XAUUSD":
-            price = self._fetch_gold_spot()
+        if norm in ["XAUTUSDT", "XAUUSD"]:
+            price = self._fetch_gold_price()
         else:
             price = self._fetch_crypto(norm)
 
         if price:
             self.price_cache[norm] = price
+            if norm == "XAUTUSDT":
+                self.price_cache["XAUUSD"] = price
+                self.price_cache["GOLD"] = price
             self.last_update_times[norm] = now
             return price
 
         return self.price_cache.get(norm)
 
-    def get_price(self, symbol: str = "XAUUSD") -> Optional[float]:
+    def get_price(self, symbol: str = "XAUTUSDT") -> Optional[float]:
         norm = self._normalize_symbol(symbol)
         cached = self.price_cache.get(norm)
         if cached:
             return cached
         # اگر هنوز در کش نبود، همگام دریافت کن
         return self.fetch_price_sync(norm)
+
+    def get_gold_price(self) -> Optional[float]:
+        return self.get_price("XAUTUSDT")
 
     def track_symbol(self, symbol: str):
         norm = self._normalize_symbol(symbol)
@@ -233,8 +322,8 @@ class PriceFetcher:
                 symbols = list(self.monitored_symbols)
                 for sym in symbols:
                     p = self.fetch_price_sync(sym)
-                    if p and sym == "XAUUSD":
-                        logger.debug(f"قیمت زنده طلا: ${p:.2f}")
+                    if p and sym in ["XAUTUSDT", "XAUUSD"]:
+                        logger.debug(f"قیمت زنده طلا (XAUT/USDT): ${p:.2f}")
             except Exception as e:
                 logger.error(f"خطا در حلقه دریافت قیمت: {e}")
 
@@ -243,3 +332,5 @@ class PriceFetcher:
 price_fetcher = PriceFetcher()
 # برای سازگاری کامل با کدهای قبلی
 gold_tracker = price_fetcher
+get_price = price_fetcher.get_price
+get_gold_price = price_fetcher.get_gold_price
