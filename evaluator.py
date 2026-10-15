@@ -293,6 +293,12 @@ class SignalEvaluator:
         except Exception as e:
             logger.error(f"خطا در ذخیره سیگنال فعال: {e}")
 
+    def has_active_trade(self) -> bool:
+        """بررسی وجود سیگنال باز و فعال در سیستم"""
+        if not self.active_signal:
+            self.active_signal = self._load_active_signal()
+        return bool(self.active_signal and not self.active_signal.get("is_closed"))
+
     # ════════════════════ ثبت و مانیتورینگ سیگنال ════════════════════
 
     def register_entry(self, direction: str, entry_raw: str, current_price: Optional[float]) -> Tuple[int, str]:

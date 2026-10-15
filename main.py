@@ -19,6 +19,7 @@ from channel_listener import WebChannelListener
 
 logging.basicConfig(
     level=logging.INFO,
+    stream=sys.stdout,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("LordGoldBot")
@@ -489,6 +490,13 @@ async def handle_channel_message(msg_id: int, raw_text: str):
         return
 
     cat, title, formatted_html, should_alert = parsed
+
+    # جلوگیری از ارسال دستورات کنترلی (ریسک‌فری / کلوز / استاپ) وقتی سیگنال فعالی وجود ندارد
+    control_categories = ["ACTION_RISKFREE", "ACTION_CLOSE", "SIGNAL_STOP", "ACTION_STOP_HIT"]
+    if cat in control_categories and not evaluator.has_active_trade():
+        logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+        return
+
     current_price = gold_tracker.get_price()
     extra_analysis = ""
     outcome_report = None
@@ -535,10 +543,16 @@ async def handle_channel_message(msg_id: int, raw_text: str):
 
     elif cat == "ACTION_RISKFREE":
         success, rf_msg = evaluator.register_risk_free()
+        if not success:
+            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+            return
         extra_analysis = f"\n\n{rf_msg}\n💵 <i>قیمت فعلی طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{rf_msg}"
 
     elif cat == "ACTION_CLOSE":
         success, close_notice, close_outcome = evaluator.register_manual_close(current_price)
+        if not success:
+            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+            return
         extra_analysis = f"\n\n{close_notice}\n💵 <i>قیمت لحظه‌ای طلا: ${current_price:.2f}</i>" if current_price else f"\n\n{close_notice}"
         if close_outcome:
             outcome_report = close_outcome
@@ -564,6 +578,11 @@ async def handle_channel_edited_message(msg_id: int, raw_text: str):
     parsed = parse_lordxau_message(raw_text)
     if parsed:
         cat, title, formatted_html, should_alert = parsed
+        control_categories = ["ACTION_RISKFREE", "ACTION_CLOSE", "SIGNAL_STOP", "ACTION_STOP_HIT"]
+        if cat in control_categories and not evaluator.has_active_trade():
+            logger.info("ℹ️ دستور کنترلی نادیده گرفته شد (معامله فعالی وجود ندارد).")
+            return
+
         current_price = gold_tracker.get_price()
         price_note = f"\n\n💵 <b>قیمت فعلی:</b> <code>${current_price:.2f}</code>" if current_price else ""
         edit_notice = f"⚠️ <b>(پیام ویرایش شد)</b>\n\n" + formatted_html + price_note

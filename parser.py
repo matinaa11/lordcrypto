@@ -125,21 +125,16 @@ def parse_lordxau_message(text: str) -> Optional[ParsedResult]:
         sl_price = None
         sl_pips = None
 
-        # الف) استاپ پیپ‌محور: Sl___90pip یا SL: 90 pip یا Stop 90pips
-        sl_pip_match = re.search(r'(?i)\b(?:sl|stop|استاپ)[_:\s-]*(\d+)\s*(?:pip|pips|پیپ)\b', cleaned)
-        if sl_pip_match:
-            sl_pips = float(sl_pip_match.group(1))
-            sl_dollars = sl_pips / 10.0
-            if entry_price > 0:
-                if direction_code == "SELL":
-                    sl_price = round(entry_price + sl_dollars, 2)
-                else:
-                    sl_price = round(entry_price - sl_dollars, 2)
-        else:
-            # ب) استاپ با قیمت طلا: Stop: 4165 یا SL 4165
-            sl_price_match = re.search(r'(?i)\b(?:sl|stop|استاپ)[_:\s-]*([2-6]\d{3}(?:\.\d+)?)\b', cleaned)
-            if sl_price_match:
-                sl_price = float(sl_price_match.group(1))
+        sl_match = re.search(r'(?i)\b(?:sl|stop|استاپ)[_:\s-]*(\d+(?:\.\d+)?)\s*(?:pip|pips|پیپ)?\b', cleaned)
+        if sl_match:
+            val = float(sl_match.group(1))
+            if val < 500:  # بیان شده بر حسب پیپ (مثلاً Sl___90pip یا SL 90)
+                sl_pips = val
+                sl_dollars = sl_pips / 10.0
+                if entry_price > 0:
+                    sl_price = round(entry_price + sl_dollars, 2) if direction_code == "SELL" else round(entry_price - sl_dollars, 2)
+            else:  # بیان شده بر حسب قیمت واقعی طلا (مثلاً Stop: 4165)
+                sl_price = val
                 if entry_price > 0:
                     sl_pips = round(abs(sl_price - entry_price) * 10, 1)
 
@@ -218,30 +213,24 @@ def parse_lordxau_message(text: str) -> Optional[ParsedResult]:
             tp2_pips=tp2_pips
         )
 
-    # ── ۲. تعیین حد ضرر جداگانه (مثال: Stop:4165 یا Sl___90pip) ──
-    sl_alone_pip = re.search(r'(?i)\b(?:stop|استاپ|sl)[_:\s-]*(\d+)\s*(?:pip|pips|پیپ)\b', cleaned)
-    sl_alone_price = re.search(r'(?i)\b(?:stop|استاپ|sl)[_:\s-]*([0-9\.]+)', cleaned)
-
-    if sl_alone_pip:
-        pips = float(sl_alone_pip.group(1))
-        msg = (
-            f"🛑 <b>حد ضرر معامله (Stop Loss)</b> 🛑\n\n"
-            f"🔻 <b>استاپ لاس:</b> <code>{int(pips)} پیپ</code> ({pips/10:.1f}$ فاصله)\n\n"
-            f"📝 <i>متن اصلی:</i> <code>{cleaned}</code>"
-        )
-        return ParsedResult("SIGNAL_STOP", "حد ضرر مشخص شد", msg, True, stop_loss=pips, sl_pips=pips)
-    elif sl_alone_price:
-        stop_val = sl_alone_price.group(1)
-        msg = (
-            f"🛑 <b>حد ضرر معامله (Stop Loss)</b> 🛑\n\n"
-            f"🔻 <b>استاپ لاس:</b> <code>{stop_val}</code>\n\n"
-            f"📝 <i>متن اصلی:</i> <code>{cleaned}</code>"
-        )
-        try:
-            val_flt = float(stop_val)
-        except ValueError:
-            val_flt = None
-        return ParsedResult("SIGNAL_STOP", "حد ضرر مشخص شد", msg, True, stop_loss=val_flt)
+    # ── ۲. تعیین حد ضرر جداگانه (مثال: Stop:4165 یا Sl___90pip یا SL 90) ──
+    sl_alone_match = re.search(r'(?i)\b(?:stop|استاپ|sl)[_:\s-]*(\d+(?:\.\d+)?)\s*(?:pip|pips|پیپ)?\b', cleaned)
+    if sl_alone_match:
+        val = float(sl_alone_match.group(1))
+        if val < 500:
+            msg = (
+                f"🛑 <b>حد ضرر معامله (Stop Loss)</b> 🛑\n\n"
+                f"🔻 <b>استاپ لاس:</b> <code>{int(val)} پیپ</code> ({val/10:.1f}$ فاصله)\n\n"
+                f"📝 <i>متن اصلی:</i> <code>{cleaned}</code>"
+            )
+            return ParsedResult("SIGNAL_STOP", "حد ضرر مشخص شد", msg, True, stop_loss=val, sl_pips=val)
+        else:
+            msg = (
+                f"🛑 <b>حد ضرر معامله (Stop Loss)</b> 🛑\n\n"
+                f"🔻 <b>استاپ لاس:</b> <code>{val:g}</code>\n\n"
+                f"📝 <i>متن اصلی:</i> <code>{cleaned}</code>"
+            )
+            return ParsedResult("SIGNAL_STOP", "حد ضرر مشخص شد", msg, True, stop_loss=val)
 
     # ── ۳. هشدارهای اقدام فوری (مثال: بای بزنید / سل بگیرید) ──
     if re.search(r'بای\s*(?:بزنید|بگیرید|کنید)', cleaned) or lower == "buy":
