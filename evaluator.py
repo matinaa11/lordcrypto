@@ -143,6 +143,13 @@ class SignalEvaluator:
             self.active_signal = self._load_active_signal()
 
         if self.active_signal and not self.active_signal.get("is_closed"):
+            # اگر استاپ بر حسب پیپ باشد (مثلاً زیر ۵۰۰ مثل 90 پیپ)، به قیمت طلا تبدیلش کن
+            if sl < 500:
+                d = self.active_signal["direction"]
+                entry = self.active_signal["entry_price"]
+                sl_dollars = sl / 10.0
+                sl = round(entry + sl_dollars, 2) if d == "SELL" else round(entry - sl_dollars, 2)
+
             self.active_signal["stop_loss"] = sl
             self.active_signal["is_default_sl"] = False
             self._save_active_signal()

@@ -289,19 +289,39 @@ async def handle_channel_message(msg_id: int, raw_text: str):
     reply_markup = None
 
     if cat == "SIGNAL_ENTRY":
-        direction = "BUY" if ("buy" in raw_text.lower() or "بای" in raw_text.lower()) else "SELL"
-        enter_match = re.search(r'(?:enter|ورود)\s*[:=]?\s*([0-9/\.\-]+)', raw_text.lower())
-        enter_raw = enter_match.group(1) if enter_match else ""
+        direction = getattr(parsed, "direction", None)
+        if not direction:
+            direction = "BUY" if ("buy" in raw_text.lower() or "بای" in raw_text.lower()) else "SELL"
+        
+        enter_raw = getattr(parsed, "entry_raw", None)
+        if not enter_raw:
+            enter_match = re.search(r'(?:enter|ورود)\s*[:=]?\s*([0-9/\.\-]+)', raw_text.lower())
+            enter_raw = enter_match.group(1) if enter_match else ""
         
         sig_num, analysis = evaluator.register_entry(direction, enter_raw, current_price)
+
+        # اگر در همان پیام سیگنال، استاپ‌لاس هم مشخص شده باشد، بلافاصله آن را متصل کن
+        parsed_sl = getattr(parsed, "stop_loss", None)
+        if parsed_sl:
+            sl_analysis, sl_outcome = evaluator.register_stop(str(parsed_sl), current_price)
+            if sl_analysis:
+                analysis = sl_analysis
+            if sl_outcome:
+                outcome_report = sl_outcome
+
         formatted_html = formatted_html.replace("⚡️ <b>سیگنال ورود جدید طلا (XAUUSD)</b> ⚡️", f"⚡️ <b>سیگنال شماره #{sig_num} طلا (XAUUSD)</b> ⚡️")
         extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل آنی موقعیت بازار:</b>\n{analysis}"
         reply_markup = get_signal_action_keyboard(sig_num)
 
     elif cat == "SIGNAL_STOP":
-        stop_match = re.search(r'(?:stop|استاپ|sl)\s*[:=]?\s*([0-9\.]+)', raw_text.lower())
-        if stop_match:
-            stop_val = stop_match.group(1)
+        parsed_sl = getattr(parsed, "stop_loss", None)
+        if parsed_sl:
+            stop_val = str(parsed_sl)
+        else:
+            stop_match = re.search(r'(?:stop|استاپ|sl)[_:\s-]*([0-9\.]+)', raw_text.lower())
+            stop_val = stop_match.group(1) if stop_match else ""
+
+        if stop_val:
             analysis, sl_outcome = evaluator.register_stop(stop_val, current_price)
             extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>وضعیت حد ضرر نسبت به بازار:</b>\n{analysis}"
             if sl_outcome:
