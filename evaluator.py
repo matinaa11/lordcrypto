@@ -23,9 +23,26 @@ class SignalEvaluator:
         settings_file: str = "settings.json",
         default_budget: float = 15.0
     ):
-        self.history_file = history_file
-        self.active_file = active_file
-        self.settings_file = settings_file
+        data_dir = os.getenv("DATA_DIR", ".").strip()
+        if data_dir and data_dir != ".":
+            import shutil
+            os.makedirs(data_dir, exist_ok=True)
+            self.history_file = os.path.join(data_dir, os.path.basename(history_file))
+            self.active_file = os.path.join(data_dir, os.path.basename(active_file))
+            self.settings_file = os.path.join(data_dir, os.path.basename(settings_file))
+
+            # مهاجرت خودکار فایل‌های قبلی به Volume پایدار در صورت وجود
+            for old_p, new_p in [(history_file, self.history_file), (active_file, self.active_file), (settings_file, self.settings_file)]:
+                if os.path.exists(old_p) and not os.path.exists(new_p) and os.path.abspath(old_p) != os.path.abspath(new_p):
+                    try:
+                        shutil.copy2(old_p, new_p)
+                        logger.info(f"📦 فایل {old_p} با موفقیت به مسیر پایدار {new_p} کپی شد.")
+                    except Exception as e:
+                        logger.error(f"خطا در کپی فایل به ولوم: {e}")
+        else:
+            self.history_file = history_file
+            self.active_file = active_file
+            self.settings_file = settings_file
         
         self.settings: Dict[str, Any] = self._load_settings()
         if default_budget != 15.0 and "balance" not in self.settings:
