@@ -174,10 +174,16 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
         ]
         if tp1_price:
             lines.append(f"🎯 <b>تارگت اول:</b> <code>{tp1_price:.2f}</code>" + (f" (+{int(tp1_pips)} پیپ)" if tp1_pips else ""))
+        else:
+            lines.append("🎯 <b>تارگت اول:</b> <code>طبق تنظیمات ربات</code>")
+
         if tp2_price:
             lines.append(f"🎯 <b>تارگت دوم:</b> <code>{tp2_price:.2f}</code>" + (f" (+{int(tp2_pips)} پیپ)" if tp2_pips else ""))
+
         if sl_price:
             lines.append(f"🛑 <b>حد ضرر:</b> <code>{sl_price:.2f}</code>" + (f" ({int(sl_pips)} پیپ استاپ)" if sl_pips else ""))
+        else:
+            lines.append("🛑 <b>حد ضرر:</b> <code>طبق تنظیمات ربات</code>")
 
         lines.append(f"\n📝 <b>متن اصلی سیگنال:</b>\n<code>{cleaned}</code>")
         msg = "\n".join(lines)

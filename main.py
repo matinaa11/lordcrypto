@@ -74,6 +74,10 @@ def get_settings_menu_keyboard(mode: str = "OURBIT_FUTURES"):
                 {"text": "📡 مدیریت کانال‌های رصد", "callback_data": "channels_menu"}
             ],
             [
+                {"text": "🎯 تنظیم تارگت (TP)", "callback_data": "settings_menu_tp"},
+                {"text": "🛑 تنظیم استاپ (SL)", "callback_data": "settings_menu_sl"}
+            ],
+            [
                 {"text": "💰 تغییر سرمایه ($)", "callback_data": "settings_menu_balance"},
                 {"text": "⚡ تغییر اهرم (Leverage)", "callback_data": "settings_menu_leverage"}
             ],
@@ -171,6 +175,44 @@ def get_fee_selection_keyboard():
             [
                 {"text": "0.06% (استاندارد)", "callback_data": "set_fee_0.06"},
                 {"text": "0.00% (بدون کارمزد)", "callback_data": "set_fee_0.00"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+            ]
+        ]
+    }
+
+def get_tp_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "20 پیپ ($2)", "callback_data": "set_tp_20"},
+                {"text": "30 پیپ ($3)", "callback_data": "set_tp_30"},
+                {"text": "50 پیپ ($5)", "callback_data": "set_tp_50"}
+            ],
+            [
+                {"text": "70 پیپ ($7)", "callback_data": "set_tp_70"},
+                {"text": "100 پیپ ($10)", "callback_data": "set_tp_100"},
+                {"text": "150 پیپ ($15)", "callback_data": "set_tp_150"}
+            ],
+            [
+                {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
+            ]
+        ]
+    }
+
+def get_sl_selection_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "15 پیپ ($1.5)", "callback_data": "set_sl_15"},
+                {"text": "20 پیپ ($2)", "callback_data": "set_sl_20"},
+                {"text": "30 پیپ ($3)", "callback_data": "set_sl_30"}
+            ],
+            [
+                {"text": "40 پیپ ($4)", "callback_data": "set_sl_40"},
+                {"text": "50 پیپ ($5)", "callback_data": "set_sl_50"},
+                {"text": "80 پیپ ($8)", "callback_data": "set_sl_80"}
             ],
             [
                 {"text": "🔙 بازگشت به تنظیمات", "callback_data": "settings_main"}
@@ -393,6 +435,47 @@ async def bot_command_listener():
                                     cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, f"{res}\n\n{evaluator.get_settings_summary_text()}", reply_markup=get_settings_menu_keyboard(cur_mode))
 
+                                # ── تنظیمات حد سود و حد ضرر طلا ──
+                                elif cb_data == "settings_menu_tp":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_tp = float(evaluator.settings.get("gold_tp_pips", 50.0))
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"🎯 <b>حد سود پیش‌فرض طلا (TP) را انتخاب کنید:</b>\n(فعلی: <b>{int(cur_tp)} پیپ</b> = ${cur_tp/10:.1f})\n\n💡 یا با دستور <code>/tp 60</code> عدد دلخواه خود را ارسال کنید.",
+                                        reply_markup=get_tp_selection_keyboard()
+                                    )
+
+                                elif cb_data.startswith("set_tp_"):
+                                    tp_val = float(cb_data.replace("set_tp_", ""))
+                                    res = evaluator.set_gold_tp(tp_val)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"تارگت طلا به {int(tp_val)} پیپ تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
+                                elif cb_data == "settings_menu_sl":
+                                    await answer_callback_query(BOT_TOKEN, cb_id)
+                                    cur_sl = float(evaluator.settings.get("gold_sl_pips", 30.0))
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"🛑 <b>حد ضرر پیش‌فرض طلا (SL) را انتخاب کنید:</b>\n(فعلی: <b>{int(cur_sl)} پیپ</b> = ${cur_sl/10:.1f})\n\n💡 یا با دستور <code>/sl 25</code> عدد دلخواه خود را ارسال کنید.",
+                                        reply_markup=get_sl_selection_keyboard()
+                                    )
+
+                                elif cb_data.startswith("set_sl_"):
+                                    sl_val = float(cb_data.replace("set_sl_", ""))
+                                    res = evaluator.set_gold_sl(sl_val)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"استاپ طلا به {int(sl_val)} پیپ تنظیم شد")
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    await send_telegram_alert(
+                                        BOT_TOKEN, USER_CHAT_ID, 
+                                        f"{res}\n\n{evaluator.get_settings_summary_text()}", 
+                                        reply_markup=get_settings_menu_keyboard(cur_mode)
+                                    )
+
                                 elif cb_data.startswith("enter_sig_"):
                                     sig_num = int(cb_data.split("_")[-1])
                                     res = evaluator.mark_user_participation(sig_num, True)
@@ -472,6 +555,24 @@ async def bot_command_listener():
                                     reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
 
+                                # تنظیم حد سود (TP) طلا به پیپ
+                                elif re.search(r'(?:/tp|/set_tp|تارگت|تی\s*پی)\s*([0-9\.]+)', text):
+                                    tp_match = re.search(r'(?:/tp|/set_tp|تارگت|تی\s*پی)\s*([0-9\.]+)', text)
+                                    new_tp = float(tp_match.group(1))
+                                    res = evaluator.set_gold_tp(new_tp)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
+                                # تنظیم حد ضرر (SL) طلا به پیپ
+                                elif re.search(r'(?:/sl|/set_sl|استاپ|حد\s*ضرر|اس\s*ال)\s*([0-9\.]+)', text):
+                                    sl_match = re.search(r'(?:/sl|/set_sl|استاپ|حد\s*ضرر|اس\s*ال)\s*([0-9\.]+)', text)
+                                    new_sl = float(sl_match.group(1))
+                                    res = evaluator.set_gold_sl(new_sl)
+                                    cur_mode = evaluator.settings.get("mode", "OURBIT_FUTURES")
+                                    reply = f"{res}\n\n{evaluator.get_settings_summary_text()}"
+                                    await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, reply, reply_markup=get_settings_menu_keyboard(cur_mode))
+
                                 # سوییچ پلتفرم
                                 elif text.startswith("/mode") or text.startswith("حالت"):
                                     parts = text.split()
@@ -499,7 +600,14 @@ async def bot_command_listener():
                                 elif text in ["/start", "/help", "منو", "راهنما"]:
                                     guide = (
                                         f"👋 <b>کنترل پنل هوشمند رصد سیگنال طلا و کریپتو</b>\n\n"
-                                        f"{evaluator.get_settings_summary_text()}"
+                                        f"{evaluator.get_settings_summary_text()}\n"
+                                        f"💡 <b>دستورات متنی سریع:</b>\n"
+                                        f"• 🎯 تنظیم تارگت طلا: <code>/tp 50</code> یا <code>تارگت 50</code> (به پیپ)\n"
+                                        f"• 🛑 تنظیم استاپ طلا: <code>/sl 30</code> یا <code>استاپ 30</code> (به پیپ)\n"
+                                        f"• 💰 تنظیم سرمایه: <code>/balance 20</code> یا <code>سرمایه 20</code>\n"
+                                        f"• ⚡ تنظیم اهرم: <code>/leverage 100</code> یا <code>اهرم 100</code>\n"
+                                        f"• 📊 تنظیم حجم لات: <code>/lot 0.02</code> یا <code>لات 0.02</code>\n"
+                                        f"• 📡 مدیریت کانال‌ها: <code>/channels</code>\n"
                                     )
                                     await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, guide, reply_markup=get_main_menu_keyboard())
 

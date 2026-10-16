@@ -12,7 +12,9 @@ DEFAULT_SETTINGS = {
     "leverage": 100,              # ضریب اهرم فیوچرز
     "lot_size": 0.01,             # حجم معامله فارکس به لات
     "fee_rate": 0.04,             # درصد کارمزد صرافی در هر طرف معامله (Ourbit Taker: 0.04%)
-    "order_type": "MARKET"        # نوع سفارش: MARKET (0.04%) یا LIMIT (0.02%)
+    "order_type": "MARKET",       # نوع سفارش: MARKET (0.04%) یا LIMIT (0.02%)
+    "gold_tp_pips": 50.0,         # حد سود (TP) پیش‌فرض طلا به پیپ (مثلاً 50 پیپ = 5 دلار)
+    "gold_sl_pips": 30.0          # حد ضرر (SL) پیش‌فرض طلا به پیپ (مثلاً 30 پیپ = 3 دلار)
 }
 
 def format_price(p: Optional[float]) -> str:
@@ -173,17 +175,35 @@ class SignalEvaluator:
         self._save_settings()
         return f"✅ نوع سفارش به <b>{msg}</b> تنظیم شد."
 
+    def set_gold_tp(self, tp_pips: float) -> str:
+        if tp_pips <= 0 or tp_pips > 1000:
+            return "❌ حد سود (TP) باید عددی بین ۵ تا ۱۰۰۰ پیپ باشد."
+        self.settings["gold_tp_pips"] = round(tp_pips, 1)
+        self._save_settings()
+        return f"✅ حد سود (TP) پیش‌فرض طلا با موفقیت به <b>{int(tp_pips)} پیپ</b> (${tp_pips/10:.1f} دلار) تنظیم شد."
+
+    def set_gold_sl(self, sl_pips: float) -> str:
+        if sl_pips <= 0 or sl_pips > 1000:
+            return "❌ حد ضرر (SL) باید عددی بین ۵ تا ۱۰۰۰ پیپ باشد."
+        self.settings["gold_sl_pips"] = round(sl_pips, 1)
+        self._save_settings()
+        return f"✅ حد ضرر (SL) پیش‌فرض طلا با موفقیت به <b>{int(sl_pips)} پیپ</b> (${sl_pips/10:.1f} دلار) تنظیم شد."
+
     def get_settings_summary_text(self) -> str:
         s = self.settings
         mode = s.get("mode", "OURBIT_FUTURES")
         mode_label = "🪙 Ourbit فیوچرز (مارجین + اهرم)" if mode == "OURBIT_FUTURES" else "📈 Forex MT5 (حجم لات)"
+        tp_p = float(s.get("gold_tp_pips", 50.0))
+        sl_p = float(s.get("gold_sl_pips", 30.0))
         
         return (
-            f"⚙️ <b>تنظیمات فعلی مدیریت سرمایه و کارمزد:</b>\n\n"
+            f"⚙️ <b>تنظیمات فعلی مدیریت سرمایه و حد سود/ضرر:</b>\n\n"
             f"🔄 <b>پلتفرم معاملاتی:</b> <code>{mode_label}</code>\n"
             f"💰 <b>سرمایه مارجین:</b> <code>${float(s.get('balance', 15.0)):.2f}</code>\n"
             f"⚡️ <b>اهرم فیوچرز (Ourbit):</b> <code>{int(s.get('leverage', 100))}x</code>\n"
             f"📊 <b>حجم معامله (Forex MT5):</b> <code>{float(s.get('lot_size', 0.01))} Lot</code>\n"
+            f"🎯 <b>حد سود پیش‌فرض طلا (TP):</b> <code>{int(tp_p)} پیپ</code> (${tp_p/10:.1f})\n"
+            f"🛑 <b>حد ضرر پیش‌فرض طلا (SL):</b> <code>{int(sl_p)} پیپ</code> (${sl_p/10:.1f})\n"
             f"💸 <b>نرخ کارمزد صرافی:</b> <code>{float(s.get('fee_rate', 0.04)):.2f}%</code> ({s.get('order_type', 'MARKET')})\n"
             f"🪙 <b>قرارداد طلا در Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n"
         )
@@ -387,15 +407,22 @@ class SignalEvaluator:
 
         dir_clean = "BUY" if ("buy" in direction.lower() or "long" in direction.lower() or "بای" in direction.lower()) else "SELL"
 
-        # محاسبه ورود و حد ضرر پیش‌فرض
+        # محاسبه ورود و حد سود/ضرر پیش‌فرض
         if symbol in ["XAUUSD", "XAUTUSDT"] or market_type == "GOLD":
             entry_min, entry_max = self._parse_entry_range(entry_raw, current_price)
             mid_entry = (entry_min + entry_max) / 2 if (entry_min and entry_max) else (current_price or 0.0)
-            default_sl = stop_loss if stop_loss else (round(mid_entry - 3.0, 2) if dir_clean == "BUY" else round(mid_entry + 3.0, 2))
+            gold_sl_pips = float(self.settings.get("gold_sl_pips", 30.0))
+            sl_dist = gold_sl_pips / 10.0 # هر ۱۰ پیپ طلا = ۱ دلار
+            default_sl = stop_loss if stop_loss else (round(mid_entry - sl_dist, 2) if dir_clean == "BUY" else round(mid_entry + sl_dist, 2))
+
+            gold_tp_pips = float(self.settings.get("gold_tp_pips", 50.0))
+            tp_dist = gold_tp_pips / 10.0 # هر ۱۰ پیپ طلا = ۱ دلار
+            calc_tp1 = tp1_price if tp1_price else (round(mid_entry + tp_dist, 2) if dir_clean == "BUY" else round(mid_entry - tp_dist, 2))
         else: # Crypto
             mid_entry = current_price or 0.0
             entry_min, entry_max = mid_entry, mid_entry
             default_sl = stop_loss if stop_loss else (round(mid_entry * 0.97, 5) if dir_clean == "BUY" else round(mid_entry * 1.03, 5))
+            calc_tp1 = tp1_price if tp1_price else (round(mid_entry * 1.01, 5) if dir_clean == "BUY" else round(mid_entry * 0.99, 5))
 
         sig_settings = self.settings.copy()
         sig_lev = leverage if leverage else (20 if market_type == "CRYPTO" else int(sig_settings.get("leverage", 100)))
@@ -417,7 +444,8 @@ class SignalEvaluator:
             "entry_raw": entry_raw,
             "stop_loss": default_sl,
             "is_default_sl": (stop_loss is None),
-            "tp1_price": tp1_price,
+            "tp1_price": calc_tp1,
+            "is_default_tp": (tp1_price is None),
             "tp2_price": tp2_price,
             "tp3_price": tp3_price,
             "leverage": sig_lev,
@@ -584,7 +612,8 @@ class SignalEvaluator:
 
         elif outcome == "LOSS":
             sl = sig.get("stop_loss")
-            sl_dist = abs(entry - sl) if sl else (3.0 if sig.get("symbol") in ["XAUUSD", "XAUTUSDT"] else entry * 0.03)
+            default_sl_dist = (float(sig_settings.get("gold_sl_pips", 30.0)) / 10.0) if sig.get("symbol") in ["XAUUSD", "XAUTUSDT", "GOLD"] else entry * 0.03
+            sl_dist = abs(entry - sl) if sl else default_sl_dist
             m = self.calculate_trade_metrics(entry, -sl_dist, sig_settings, custom_leverage=sig_lev)
             gross_pnl = m["gross_pnl"]
             total_fee = m["total_fee"]
@@ -701,11 +730,15 @@ class SignalEvaluator:
         if tp1_p and entry > 0:
             tp_diff = abs(tp1_p - entry)
         else:
-            tp_diff = 2.0 if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else (entry * 0.01)
+            tp_diff = (float(s.get("gold_tp_pips", 50.0)) / 10.0) if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else (entry * 0.01)
 
         m_tp1 = self.calculate_trade_metrics(entry, tp_diff, s, custom_leverage=lev)
-        sl_dist = abs(entry - sl) if sl else (3.0 if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else entry * 0.03)
+        sl_default_dist = (float(s.get("gold_sl_pips", 30.0)) / 10.0) if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else entry * 0.03
+        sl_dist = abs(entry - sl) if sl else sl_default_dist
         m_sl = self.calculate_trade_metrics(entry, -sl_dist, s, custom_leverage=lev)
+
+        tp_label = f"<code>{format_price(tp1_p)}</code>" + (" <i>(پیش‌فرض ربات)</i>" if sig.get("is_default_tp") else "") if tp1_p else "مشخص نشده"
+        sl_label = f"<code>{format_price(sl)}</code>" + (" <i>(پیش‌فرض ربات)</i>" if sig.get("is_default_sl") else "") if sl else "مشخص نشده"
 
         status_lines = [
             f"📢 <b>کانال:</b> {sig.get('channel_title', clean_ch)}",
@@ -714,7 +747,8 @@ class SignalEvaluator:
         if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"]:
             status_lines.append("🪙 <b>قرارداد معادل در Ourbit:</b> <code>GOLD(XAUT)USDT</code>")
         status_lines.extend([
-            f"🛑 <b>حد ضرر:</b> <code>{format_price(sl)}</code>" if sl else "🛑 <b>حد ضرر:</b> مشخص نشده",
+            f"🎯 <b>حد سود (TP):</b> {tp_label}",
+            f"🛑 <b>حد ضرر (SL):</b> {sl_label}",
             f"💰 <b>پیش‌بینی سود و زیان (اهرم {lev or 100}x):</b>",
             f"• تارگت اول: خالص <b><code>+{m_tp1['net_pnl']:.2f}$</code></b> (+{m_tp1['net_pct']:.0f}%)",
             f"• در صورت استاپ: خالص با کارمزد <b><code>-${abs(m_sl['net_pnl']):.2f}</code></b>"
@@ -779,7 +813,7 @@ class SignalEvaluator:
         if tp1:
             is_tp_hit = (direction == "BUY" and current_price >= tp1) or (direction == "SELL" and current_price <= tp1)
         else:
-            threshold = 2.0 if symbol in ["XAUUSD", "XAUTUSDT"] else (entry * 0.01)
+            threshold = (float(s.get("gold_tp_pips", 50.0)) / 10.0) if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else (entry * 0.01)
             is_tp_hit = (cur_profit >= threshold)
 
         if is_tp_hit and not sig.get("target_hit"):
