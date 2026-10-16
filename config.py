@@ -16,14 +16,14 @@ if DATA_DIR and DATA_DIR != ".":
 
 CHANNELS_FILE = os.path.join(DATA_DIR, "channels.json")
 
-DEFAULT_GOLD_SYMBOL = "XAUTUSDT"
-DEFAULT_GOLD_DISPLAY = "XAUT/USDT (GOLD)"
+DEFAULT_GOLD_SYMBOL = "XAUUSD"
+DEFAULT_GOLD_DISPLAY = "XAU/USD (TradingView)"
 OURBIT_GOLD_CONTRACT = "GOLD(XAUT)USDT"
 
 DEFAULT_CHANNELS = [
     {
         "username": "lordxau",
-        "title": "LORD XAU (XAUT/USDT)",
+        "title": "LORD XAU (TradingView)",
         "type": "GOLD",
         "enabled": True
     },

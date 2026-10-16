@@ -221,9 +221,9 @@ async def bot_command_listener():
                                     continue
 
                                 elif cb_data == "check_price":
-                                    price = price_fetcher.get_price("XAUTUSDT")
+                                    price = price_fetcher.get_price("XAUUSD")
                                     p_str = f"${price:.2f}" if price else "در حال دریافت..."
-                                    await answer_callback_query(BOT_TOKEN, cb_id, f"قیمت طلا (XAUT/USDT): {p_str}\nقرارداد Ourbit: GOLD(XAUT)USDT", show_alert=True)
+                                    await answer_callback_query(BOT_TOKEN, cb_id, f"قیمت طلا (TradingView): {p_str}\nقرارداد معادل در Ourbit: GOLD(XAUT)USDT", show_alert=True)
 
                                 elif cb_data == "check_stats":
                                     await answer_callback_query(BOT_TOKEN, cb_id)
@@ -562,7 +562,7 @@ async def handle_channel_message(msg_id: int, raw_text: str, channel_name: str =
         logger.info(f"ℹ️ دستور کنترلی از @{channel_name} نادیده گرفته شد (معامله فعالی در این کانال وجود ندارد).")
         return
 
-    symbol = getattr(parsed, "symbol", "XAUTUSDT")
+    symbol = getattr(parsed, "symbol", "XAUUSD")
     market_type = getattr(parsed, "market_type", "GOLD")
     current_price = price_fetcher.get_price(symbol)
     extra_analysis = ""
@@ -674,7 +674,7 @@ async def handle_channel_message(msg_id: int, raw_text: str, channel_name: str =
                 if sl_outcome:
                     outcome_report = sl_outcome
 
-            sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
+            sym_display = "XAU/USD (TradingView)" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else symbol
             price_note = f"${current_price:.2f}" if current_price else "در حال بارگذاری..."
             extra_analysis = f"\n\n━━━━━━━━━━━━━━━\n📊 <b>تحلیل وضعیت ورود:</b>\n{analysis}\n💵 <i>قیمت لحظه‌ای {sym_display}: {price_note}</i>"
 
@@ -732,9 +732,9 @@ async def handle_channel_edited_message(msg_id: int, raw_text: str, channel_name
             logger.info(f"ℹ️ دستور کنترلی ادیت از @{channel_name} نادیده گرفته شد.")
             return
 
-        symbol = getattr(parsed, "symbol", "XAUTUSDT")
+        symbol = getattr(parsed, "symbol", "XAUUSD")
         current_price = price_fetcher.get_price(symbol)
-        sym_disp = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
+        sym_disp = "XAU/USD (TradingView)" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else symbol
         price_note = f"\n\n💵 <b>قیمت فعلی {sym_disp}:</b> <code>{format_price(current_price)}</code>" if current_price else ""
         edit_notice = f"⚠️ <b>(پیام ویرایش شد)</b>\n\n" + formatted_html + price_note
         await send_telegram_alert(BOT_TOKEN, USER_CHAT_ID, edit_notice)
@@ -751,7 +751,7 @@ async def main():
     asyncio.create_task(daily_digest_scheduler())
 
     await asyncio.sleep(2.0)
-    initial_gold_price = price_fetcher.get_price("XAUTUSDT")
+    initial_gold_price = price_fetcher.get_price("XAUUSD")
     price_str = f"${initial_gold_price:.2f}" if initial_gold_price else "در حال بارگذاری..."
 
     s = evaluator.settings
@@ -763,8 +763,8 @@ async def main():
     startup_msg = (
         "🚀 <b>ربات هوشمند رصد چندکاناله طلا و کریپتو فعال شد!</b>\n\n"
         f"📡 <b>کانال‌های فعال تحت رصد:</b>\n{ch_names_str}\n\n"
-        f"💵 <b>قیمت لحظه‌ای طلا (XAUT/USDT):</b> <code>{price_str}</code>\n"
-        f"🪙 <b>قرارداد طلا در صرافی Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n"
+        f"💵 <b>قیمت لحظه‌ای طلا (TradingView):</b> <code>{price_str}</code>\n"
+        f"🪙 <b>قرارداد معادل طلا در Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n"
         f"📊 <b>پلتفرم معاملاتی:</b> <code>{mode_str}</code>\n"
         f"💰 <b>سرمایه مارجین:</b> <code>${evaluator.trade_budget:.2f}</code> | ⚡️ <b>اهرم:</b> <code>{s.get('leverage', 100)}x</code>\n"
         f"💸 <b>نرخ کارمزد صرافی:</b> <code>{s.get('fee_rate', 0.04)}%</code> ({s.get('order_type', 'MARKET')})\n\n"

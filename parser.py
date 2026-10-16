@@ -13,7 +13,7 @@ class ParsedResult(tuple):
         obj.title = title
         obj.formatted_html = formatted_html
         obj.should_alert = should_alert
-        obj.symbol = kwargs.get("symbol", "XAUTUSDT")
+        obj.symbol = kwargs.get("symbol", "XAUUSD")
         obj.market_type = kwargs.get("market_type", "GOLD") # "GOLD" یا "CRYPTO"
         obj.direction = kwargs.get("direction")
         obj.entry_raw = kwargs.get("entry_raw")
@@ -166,10 +166,10 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
                     tp2_price = round(entry_price - tp2_dollars, 2) if direction_code == "SELL" else round(entry_price + tp2_dollars, 2)
 
         lines = [
-            f"{channel_header}⚡️ <b>سیگنال ورود جدید طلا (XAUT/USDT)</b> ⚡️\n",
+            f"{channel_header}⚡️ <b>سیگنال ورود جدید طلا (TradingView)</b> ⚡️\n",
             f"🔸 <b>جهت معامله:</b> {direction_badge}",
-            f"🔸 <b>نماد:</b> <code>XAUT/USDT (GOLD)</code>",
-            f"🪙 <b>قرارداد Ourbit:</b> <code>GOLD(XAUT)USDT</code>",
+            f"🔸 <b>نماد:</b> <code>XAU/USD (TradingView)</code>",
+            f"🪙 <b>قرارداد معادل Ourbit:</b> <code>GOLD(XAUT)USDT</code>",
             f"🔸 <b>محدوده ورود:</b> <code>{entry_raw}</code>" + (f" (~{entry_price:.2f})" if entry_price > 0 else "")
         ]
         if tp1_price:
@@ -187,7 +187,7 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
             f"سیگنال طلا {direction_badge}",
             msg,
             True,
-            symbol="XAUTUSDT",
+            symbol="XAUUSD",
             market_type="GOLD",
             direction=direction_code,
             entry_raw=entry_raw,
@@ -342,11 +342,11 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
 
     if re.search(r'بای\s*(?:بزنید|بگیرید|کنید)', cleaned) or lower == "buy":
         msg = f"{channel_header}🟢 <b>هشدار خرید فوری (BUY)</b> 🟢\n\n<i>متن ادمین:</i> <code>{cleaned}</code>"
-        return ParsedResult("ACTION_BUY", "خرید فوری طلا", msg, True, symbol="XAUTUSDT", direction="BUY", channel_title=channel_title)
+        return ParsedResult("ACTION_BUY", "خرید فوری طلا", msg, True, symbol="XAUUSD", direction="BUY", channel_title=channel_title)
 
     if re.search(r'سل\s*(?:بزنید|بگیرید|کنید)', cleaned) or lower == "sell":
         msg = f"{channel_header}🔴 <b>هشدار فروش فوری (SELL)</b> 🔴\n\n<i>متن ادمین:</i> <code>{cleaned}</code>"
-        return ParsedResult("ACTION_SELL", "فروش فوری طلا", msg, True, symbol="XAUTUSDT", direction="SELL", channel_title=channel_title)
+        return ParsedResult("ACTION_SELL", "فروش فوری طلا", msg, True, symbol="XAUUSD", direction="SELL", channel_title=channel_title)
 
     if "اماده سیگنال" in cleaned or "آماده سیگنال" in cleaned:
         msg = f"{channel_header}⏳ <b>آماده‌باش برای دریافت سیگنال</b> ⏳\n\n<i>متن ادمین:</i> <code>{cleaned}</code>"
@@ -419,14 +419,14 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
     price_match = re.search(r'(?:xau|xaut)\s*[:=]\s*([0-9\.]+)', lower)
     if price_match:
         price_val = price_match.group(1)
-        msg = f"{channel_header}📊 <b>گزارش قیمت طلا (XAUT/USDT)</b>\n\nقیمت اعلامی: <code>{price_val}</code>\n<i>متن:</i> <code>{cleaned}</code>"
-        return ParsedResult("PRICE_UPDATE", "قیمت لحظه‌ای طلا", msg, True, symbol="XAUTUSDT", channel_title=channel_title)
+        msg = f"{channel_header}📊 <b>گزارش قیمت طلا (TradingView)</b>\n\nقیمت اعلامی: <code>{price_val}</code>\n<i>متن:</i> <code>{cleaned}</code>"
+        return ParsedResult("PRICE_UPDATE", "قیمت لحظه‌ای طلا", msg, True, symbol="XAUUSD", channel_title=channel_title)
 
     target_match = re.search(r'تا\s*([0-9\.]+)\s*(?:میریزه|میره|میاد)', cleaned)
     if target_match:
         target_val = target_match.group(1)
         msg = f"{channel_header}🎯 <b>تارگت پیش‌بینی‌شده طلا</b>\n\nتارگت: <code>{target_val}</code>\n<i>متن:</i> <code>{cleaned}</code>"
-        return ParsedResult("TARGET_UPDATE", "تارگت اعلام شد", msg, True, symbol="XAUTUSDT", channel_title=channel_title)
+        return ParsedResult("TARGET_UPDATE", "تارگت اعلام شد", msg, True, symbol="XAUUSD", channel_title=channel_title)
 
     # ════════════════════ ۷. پیام‌های تکمیلی مدیریت معامله ════════════════════
     if any(k in cleaned for k in ["فری خورد", "مدیریت بکنید", "تی پی", "برگشت ورود", "برگشت به ورود", "فری شد"]):
@@ -436,4 +436,4 @@ def parse_channel_message(text: str, channel_title: str = "", channel_name: str 
     return None
 
 # نام مستعار برای سازگاری ۱۰۰٪ با کدهای قبلی
-parse_lordxau_message = lambda text: parse_channel_message(text, channel_title="LORD XAU (XAUT/USDT)", channel_name="lordxau")
+parse_lordxau_message = lambda text: parse_channel_message(text, channel_title="LORD XAU (TradingView)", channel_name="lordxau")

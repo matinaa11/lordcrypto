@@ -361,8 +361,8 @@ class SignalEvaluator:
         entry_raw: str, 
         current_price: Optional[float],
         source_channel: str = "lordxau",
-        channel_title: str = "LORD XAU (XAUT/USDT)",
-        symbol: str = "XAUTUSDT",
+        channel_title: str = "LORD XAU (TradingView)",
+        symbol: str = "XAUUSD",
         stop_loss: Optional[float] = None,
         tp1_price: Optional[float] = None,
         tp2_price: Optional[float] = None,
@@ -618,8 +618,8 @@ class SignalEvaluator:
         sig_num = sig.get("number", 1)
         outcome = sig["outcome"]
         ch_title = sig.get("channel_title", f"@{sig.get('source_channel', 'lordxau')}")
-        symbol = sig.get("symbol", "XAUTUSDT")
-        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
+        symbol = sig.get("symbol", "XAUUSD")
+        sym_display = "XAU/USD (TradingView)" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else symbol
         
         s = sig.get("settings", self.settings)
         mode = s.get("mode", "OURBIT_FUTURES")
@@ -670,7 +670,7 @@ class SignalEvaluator:
             badge = "⚪️ <b>منقضی / نامشخص</b>"
             pnl_details = f"علت خروج: {sig.get('outcome_reason', 'پایان زمان')}"
 
-        ourbit_line = f"🪙 <b>قرارداد Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n" if symbol in ["XAUUSD", "XAUTUSDT"] else ""
+        ourbit_line = f"🪙 <b>قرارداد معادل در Ourbit:</b> <code>GOLD(XAUT)USDT</code>\n" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else ""
 
         return (
             f"{header}\n\n"
@@ -692,8 +692,8 @@ class SignalEvaluator:
         direction = sig["direction"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
-        symbol = sig.get("symbol", "XAUTUSDT")
-        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
+        symbol = sig.get("symbol", "XAUUSD")
+        sym_display = "XAU/USD (TradingView)" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else symbol
         s = sig.get("settings", self.settings)
         lev = sig.get("leverage")
 
@@ -701,18 +701,18 @@ class SignalEvaluator:
         if tp1_p and entry > 0:
             tp_diff = abs(tp1_p - entry)
         else:
-            tp_diff = 2.0 if symbol in ["XAUUSD", "XAUTUSDT"] else (entry * 0.01)
+            tp_diff = 2.0 if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else (entry * 0.01)
 
         m_tp1 = self.calculate_trade_metrics(entry, tp_diff, s, custom_leverage=lev)
-        sl_dist = abs(entry - sl) if sl else (3.0 if symbol in ["XAUUSD", "XAUTUSDT"] else entry * 0.03)
+        sl_dist = abs(entry - sl) if sl else (3.0 if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else entry * 0.03)
         m_sl = self.calculate_trade_metrics(entry, -sl_dist, s, custom_leverage=lev)
 
         status_lines = [
             f"📢 <b>کانال:</b> {sig.get('channel_title', clean_ch)}",
             f"📊 <b>نماد:</b> <code>{sym_display}</code> | <b>جهت:</b> <b>{direction}</b> | <b>نقطه ورود:</b> <code>{format_price(entry)}</code>",
         ]
-        if symbol in ["XAUUSD", "XAUTUSDT"]:
-            status_lines.append("🪙 <b>قرارداد Ourbit:</b> <code>GOLD(XAUT)USDT</code>")
+        if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"]:
+            status_lines.append("🪙 <b>قرارداد معادل در Ourbit:</b> <code>GOLD(XAUT)USDT</code>")
         status_lines.extend([
             f"🛑 <b>حد ضرر:</b> <code>{format_price(sl)}</code>" if sl else "🛑 <b>حد ضرر:</b> مشخص نشده",
             f"💰 <b>پیش‌بینی سود و زیان (اهرم {lev or 100}x):</b>",
@@ -732,7 +732,7 @@ class SignalEvaluator:
             if not sig or sig.get("is_closed"):
                 continue
 
-            symbol = sig.get("symbol", "XAUTUSDT")
+            symbol = sig.get("symbol", "XAUUSD")
             if callable(get_price_func_or_price):
                 cur_price = get_price_func_or_price(symbol)
             elif isinstance(get_price_func_or_price, (int, float)):
@@ -756,8 +756,8 @@ class SignalEvaluator:
         e_max = sig["entry_max"]
         entry = sig["entry_price"]
         sl = sig.get("stop_loss")
-        symbol = sig.get("symbol", "XAUTUSDT")
-        sym_display = "XAUT/USDT (GOLD)" if symbol in ["XAUUSD", "XAUTUSDT"] else symbol
+        symbol = sig.get("symbol", "XAUUSD")
+        sym_display = "XAU/USD (TradingView)" if symbol in ["XAUUSD", "XAUTUSDT", "GOLD"] else symbol
         ch_title = sig.get("channel_title", f"@{source_channel}")
         s = sig.get("settings", self.settings)
         lev = sig.get("leverage")

@@ -14,17 +14,59 @@ class PriceFetcher:
         self.last_update_times: Dict[str, float] = {}
         self.is_running = False
         self._consecutive_spikes = 0
-        self.monitored_symbols = set(["XAUTUSDT"])
+        self.monitored_symbols = set(["XAUUSD"])
 
     def _normalize_symbol(self, raw_symbol: str) -> str:
         s = raw_symbol.upper().replace("/", "").replace("-", "").strip()
         if s in ["XAU", "GOLD", "XAUUSD", "طلا", "XAUT", "XAUTUSDT", "GOLD(XAUT)USDT"]:
-            return "XAUTUSDT"
+            return "XAUUSD"
         if not s.endswith("USDT") and not s.endswith("USD"):
             s = f"{s}USDT"
         return s
 
-    # ════════════════════ قیمت طلا (XAUT / Tether Gold) ════════════════════
+    # ════════════════════ استعلام زنده قیمت از TradingView ════════════════════
+
+    def _fetch_from_tradingview(self, symbol: str) -> Optional[float]:
+        """دریافت مستقیم و زنده قیمت از اسکنر رسمی TradingView"""
+        s = symbol.upper().replace("/", "").replace("-", "").strip()
+        is_gold = s in ["XAU", "GOLD", "XAUUSD", "طلا", "XAUT", "XAUTUSDT", "GOLD(XAUT)USDT"]
+
+        if is_gold:
+            url = "https://scanner.tradingview.com/cfd/scan"
+            tickers = ["TVC:GOLD", "OANDA:XAUUSD", "FOREXCOM:XAUUSD", "FX_IDC:XAUUSD"]
+        else:
+            url = "https://scanner.tradingview.com/crypto/scan"
+            coin = s[:-4] if s.endswith("USDT") else (s[:-3] if s.endswith("USD") else s)
+            tickers = [f"BINANCE:{coin}USDT", f"BYBIT:{coin}USDT", f"MEXC:{coin}USDT", f"OKX:{coin}USDT"]
+
+        payload = {
+            "symbols": {"tickers": tickers},
+            "columns": ["close"]
+        }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Content-Type": "application/json"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=3.5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                rows = data.get("data", [])
+                if rows:
+                    for r in rows:
+                        val = r.get("d", [])[0]
+                        if val and float(val) > 0:
+                            return float(val)
+        except Exception as e:
+            logger.debug(f"TradingView scan error for {symbol}: {e}")
+
+        return None
+
+    # ════════════════════ قیمت طلا (TradingView + Fallbacks) ════════════════════
 
     def _fetch_xaut_mexc(self) -> Optional[float]:
         # اولویت ۱-الف: MEXC Spot GOLD(XAUT)USDT
@@ -130,26 +172,13 @@ class PriceFetcher:
     def _fetch_gold_price(self) -> Optional[float]:
         raw_price = None
 
-        # اولویت ۱: MEXC Spot / Futures
-        raw_price = self._fetch_xaut_mexc()
+        # اولویت ۱: قیمت چارت رسمی TradingView (TVC:GOLD / OANDA:XAUUSD)
+        try:
+            raw_price = self._fetch_from_tradingview("XAUUSD")
+        except Exception as e:
+            logger.debug(f"TradingView gold fetch error: {e}")
 
-        # اولویت ۲: Bybit Spot / Linear
-        if not raw_price:
-            raw_price = self._fetch_xaut_bybit()
-
-        # اولویت ۳: Binance Spot
-        if not raw_price:
-            raw_price = self._fetch_xaut_binance()
-
-        # بک‌آپ پشتیبان (PAXG / Gold API)
-        if not raw_price:
-            try:
-                p = self._fetch_from_binance_paxg()
-                if p and p > 1000:
-                    raw_price = p
-            except Exception:
-                pass
-
+        # اولویت ۲ (بک‌آپ): Gold-API مستقیم جهانی (Spot XAU/USD)
         if not raw_price:
             try:
                 p = self._fetch_from_gold_api()
@@ -158,14 +187,27 @@ class PriceFetcher:
             except Exception:
                 pass
 
+        # اولویت ۳ (بک‌آپ): PAXG بایننس
+        if not raw_price:
+            try:
+                p = self._fetch_from_binance_paxg()
+                if p and p > 1000:
+                    raw_price = p
+            except Exception:
+                pass
+
+        # اولویت ۴ (بک‌آپ): صرافی‌های کریپتو (MEXC / Bybit)
+        if not raw_price:
+            raw_price = self._fetch_xaut_mexc() or self._fetch_xaut_bybit() or self._fetch_xaut_binance()
+
         if not raw_price:
             return None
 
         # فیلتر جهش غیرعادی طلا
-        cur_gold = self.price_cache.get("XAUTUSDT") or self.price_cache.get("XAUUSD")
+        cur_gold = self.price_cache.get("XAUUSD") or self.price_cache.get("XAUTUSDT")
         if cur_gold is not None:
             diff = abs(raw_price - cur_gold)
-            if diff > 10.0:
+            if diff > 15.0:
                 self._consecutive_spikes += 1
                 if self._consecutive_spikes < 3:
                     logger.warning(f"جهش مشکوک طلا {raw_price} نسبت به {cur_gold} رد شد.")
@@ -229,9 +271,17 @@ class PriceFetcher:
             return float(price) if price else None
 
     def _fetch_crypto(self, pair: str) -> Optional[float]:
+        # اولویت ۱: استعلام زنده و مستقیم از TradingView
+        try:
+            tv_p = self._fetch_from_tradingview(pair)
+            if tv_p and tv_p > 0:
+                return tv_p
+        except Exception as e:
+            logger.debug(f"TradingView crypto error {pair}: {e}")
+
         coin = self._extract_coin_name(pair)
 
-        # ۱. صرافی MEXC Futures (چون مارکت فیوچرز Ourbit دقیقاً نقدینگی و کوین‌های مشابه MEXC دارد)
+        # اولویت ۲: صرافی MEXC Futures (چون مارکت فیوچرز Ourbit دقیقاً نقدینگی و کوین‌های مشابه MEXC دارد)
         try:
             p = self._fetch_mexc_futures(coin)
             if p and p > 0:
@@ -239,7 +289,7 @@ class PriceFetcher:
         except Exception as e:
             logger.debug(f"MEXC Futures {coin} error: {e}")
 
-        # ۲. صرافی MEXC Spot
+        # اولویت ۳: صرافی MEXC Spot
         try:
             p = self._fetch_mexc_spot(coin)
             if p and p > 0:
@@ -247,7 +297,7 @@ class PriceFetcher:
         except Exception as e:
             logger.debug(f"MEXC Spot {coin} error: {e}")
 
-        # ۳. صرافی Bybit Linear Tickers
+        # اولویت ۴: صرافی Bybit Linear Tickers
         try:
             p = self._fetch_bybit_linear(coin)
             if p and p > 0:
@@ -255,7 +305,7 @@ class PriceFetcher:
         except Exception as e:
             logger.debug(f"Bybit {coin} error: {e}")
 
-        # ۴. صرافی Binance Futures
+        # اولویت ۵: صرافی Binance Futures
         try:
             p = self._fetch_binance_futures(coin)
             if p and p > 0:
@@ -263,7 +313,7 @@ class PriceFetcher:
         except Exception as e:
             logger.debug(f"Binance Futures {coin} error: {e}")
 
-        # ۵. صرافی Binance Spot
+        # اولویت ۶: صرافی Binance Spot
         try:
             p = self._fetch_binance_spot(coin)
             if p and p > 0:
@@ -275,7 +325,7 @@ class PriceFetcher:
 
     # ════════════════════ دریافت قیمت عمومی ════════════════════
 
-    def fetch_price_sync(self, symbol: str = "XAUTUSDT") -> Optional[float]:
+    def fetch_price_sync(self, symbol: str = "XAUUSD") -> Optional[float]:
         norm = self._normalize_symbol(symbol)
         now = time.time()
 
@@ -283,22 +333,23 @@ class PriceFetcher:
         if norm in self.price_cache and (now - self.last_update_times.get(norm, 0) < 1.5):
             return self.price_cache[norm]
 
-        if norm in ["XAUTUSDT", "XAUUSD"]:
+        if norm in ["XAUUSD", "XAUTUSDT", "GOLD"]:
             price = self._fetch_gold_price()
         else:
             price = self._fetch_crypto(norm)
 
         if price:
             self.price_cache[norm] = price
-            if norm == "XAUTUSDT":
+            if norm in ["XAUUSD", "XAUTUSDT", "GOLD"]:
                 self.price_cache["XAUUSD"] = price
+                self.price_cache["XAUTUSDT"] = price
                 self.price_cache["GOLD"] = price
             self.last_update_times[norm] = now
             return price
 
         return self.price_cache.get(norm)
 
-    def get_price(self, symbol: str = "XAUTUSDT") -> Optional[float]:
+    def get_price(self, symbol: str = "XAUUSD") -> Optional[float]:
         norm = self._normalize_symbol(symbol)
         cached = self.price_cache.get(norm)
         if cached:
@@ -307,7 +358,7 @@ class PriceFetcher:
         return self.fetch_price_sync(norm)
 
     def get_gold_price(self) -> Optional[float]:
-        return self.get_price("XAUTUSDT")
+        return self.get_price("XAUUSD")
 
     def track_symbol(self, symbol: str):
         norm = self._normalize_symbol(symbol)
@@ -322,8 +373,8 @@ class PriceFetcher:
                 symbols = list(self.monitored_symbols)
                 for sym in symbols:
                     p = self.fetch_price_sync(sym)
-                    if p and sym in ["XAUTUSDT", "XAUUSD"]:
-                        logger.debug(f"قیمت زنده طلا (XAUT/USDT): ${p:.2f}")
+                    if p and sym in ["XAUUSD", "XAUTUSDT", "GOLD"]:
+                        logger.debug(f"قیمت زنده طلا (TradingView): ${p:.2f}")
             except Exception as e:
                 logger.error(f"خطا در حلقه دریافت قیمت: {e}")
 
